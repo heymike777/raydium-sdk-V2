@@ -60,7 +60,6 @@ interface TxBuilderInit {
 
 export interface AddInstructionParam {
   addresses?: Record<string, PublicKey>;
-  startInstructions?: TransactionInstruction[];
   instructions?: TransactionInstruction[];
   endInstructions?: TransactionInstruction[];
   lookupTableAddress?: string[];
@@ -211,7 +210,6 @@ export class TxBuilder {
   }
 
   public addInstruction({
-    startInstructions = [],
     instructions = [],
     endInstructions = [],
     signers = [],
@@ -219,7 +217,6 @@ export class TxBuilder {
     endInstructionTypes = [],
     lookupTableAddress = [],
   }: AddInstructionParam): TxBuilder {
-    this.instructions.splice(2, 0, ...startInstructions);
     this.instructions.push(...instructions);
     this.endInstructions.push(...endInstructions);
     this.signers.push(...signers);
