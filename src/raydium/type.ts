@@ -1,8 +1,16 @@
-import { PublicKey, Signer, Transaction, TransactionInstruction, VersionedTransaction } from "@solana/web3.js";
-import { Mint, TransferFeeConfig } from "@solana/spl-token";
+import { PublicKey, Signer, Transaction, TransactionInstruction, VersionedTransaction, Keypair } from "@solana/web3.js";
+import BN from "bn.js";
+import { getTransferFeeConfig, Mint } from "@solana/spl-token";
 import { MultiTxExecuteParam, TxBuilder } from "../common/txTool/txTool";
 import { TokenAmount } from "../module/amount";
-import BN from "bn.js";
+
+export interface ReturnTypeMakeInstructions<T = Record<string, PublicKey>> {
+  signers: (Signer | Keypair)[];
+  instructions: TransactionInstruction[];
+  instructionTypes: string[];
+  address: T;
+  lookupTableAddress: string[];
+}
 
 export type SignAllTransactions =
   | (<T extends Transaction | VersionedTransaction>(transaction: T[]) => Promise<T[]>)
@@ -63,7 +71,8 @@ export interface GetTransferAmountFee {
   expirationTime: number | undefined;
 }
 
-export type ReturnTypeFetchMultipleMintInfo = Mint & { feeConfig: TransferFeeConfig | undefined };
+// export type ReturnTypeFetchMultipleMintInfo = Mint & { feeConfig: TransferFeeConfig | undefined };
+export type ReturnTypeFetchMultipleMintInfo = Mint & { feeConfig: ReturnType<typeof getTransferFeeConfig> | undefined };
 export interface ReturnTypeFetchMultipleMintInfos {
   [mint: string]: ReturnTypeFetchMultipleMintInfo & { programId: PublicKey };
 }

@@ -1,51 +1,55 @@
-import { createAssociatedTokenAccountInstruction } from "@solana/spl-token";
 import { PublicKey, SystemProgram } from "@solana/web3.js";
+import { createAssociatedTokenAccountInstruction } from "@solana/spl-token";
+import { parseBigNumberish } from "@/common";
 
-import { FormatFarmKeyOut } from "@/api/type";
+import { FormatFarmKeyOut } from "../../api/type";
 import { AddInstructionParam, jsonInfo2PoolKeys } from "@/common";
-import { parseBigNumberish, BN_ZERO } from "@/common/bignumber";
-import { SOLMint, WSOLMint } from "@/common/pubKey";
-import { MakeTxData, MakeMultiTxData } from "@/common/txTool/txTool";
-import { InstructionType, TxVersion } from "@/common/txTool/txType";
+import { BN_ZERO } from "@/common/bignumber";
 import { getATAAddress } from "@/common/pda";
 import { FARM_PROGRAM_ID_V6 } from "@/common/programId";
+import { SOLMint, WSOLMint } from "@/common/pubKey";
+import { MakeMultiTxData, MakeTxData } from "@/common/txTool/txTool";
+import { InstructionType, TxVersion } from "@/common/txTool/txType";
 import { generatePubKey } from "../account/util";
 
+import Decimal from "decimal.js";
+import { FormatFarmInfoOut, FormatFarmKeyOutV6 } from "../../api/type";
+import { ComputeBudgetConfig } from "../../raydium/type";
 import { createWSolAccountInstructions } from "../account/instruction";
 import ModuleBase from "../moduleBase";
 import { TOKEN_WSOL } from "../token/constant";
-import { ComputeBudgetConfig } from "@/raydium/type";
 import {
   FARM_LOCK_MINT,
   FARM_LOCK_VAULT,
+  FARM_PROGRAM_TO_VERSION,
   isValidFarmVersion,
   poolTypeV6,
   validateFarmRewards,
-  FARM_PROGRAM_TO_VERSION,
 } from "./config";
 import {
   createAssociatedLedgerAccountInstruction,
+  makeAddNewRewardInstruction,
   makeCreateFarmInstruction,
   makeCreatorWithdrawFarmRewardInstruction,
-  makeRestartRewardInstruction,
-  makeAddNewRewardInstruction,
-  makeWithdrawInstructionV3,
-  makeWithdrawInstructionV5,
-  makeWithdrawInstructionV6,
   makeDepositInstructionV3,
   makeDepositInstructionV5,
   makeDepositInstructionV6,
+  makeRestartRewardInstruction,
+  makeWithdrawInstructionV3,
+  makeWithdrawInstructionV4,
+  makeWithdrawInstructionV5,
+  makeWithdrawInstructionV6,
 } from "./instruction";
-import { farmStateV6Layout, FarmLedger } from "./layout";
+import { FarmLedger, farmStateV6Layout } from "./layout";
 import {
   CreateFarm,
+  CreateFarmExtInfo,
   FarmDWParam,
   FarmRewardInfo,
   FarmRewardInfoConfig,
   RewardInfoKey,
   UpdateFarmReward,
   UpdateFarmRewards,
-  CreateFarmExtInfo,
 } from "./type";
 import {
   calFarmRewardAmount,
@@ -55,8 +59,6 @@ import {
   getAssociatedLedgerPoolAccount,
   getFarmLedgerLayout,
 } from "./util";
-import { FormatFarmInfoOut, FormatFarmKeyOutV6 } from "@/api/type";
-import Decimal from "decimal.js";
 
 export default class Farm extends ModuleBase {
   // token account needed
@@ -436,6 +438,7 @@ export default class Farm extends ModuleBase {
 
     const { rewardInfos, programId } = farmInfo;
     const version = FARM_PROGRAM_TO_VERSION[programId];
+    if (version === 4) this.logAndCreateError("V4 has suspended deposits:", farmInfo.programId);
     if (!isValidFarmVersion(version)) this.logAndCreateError("invalid farm program:", farmInfo.programId);
     const [farmProgramId, farmId] = [new PublicKey(farmInfo.programId), new PublicKey(farmInfo.id)];
     const farmKeys = (await this.scope.api.fetchFarmKeysById({ ids: farmInfo.id }))[0];
@@ -444,7 +447,7 @@ export default class Farm extends ModuleBase {
       programId: farmProgramId,
       poolId: farmId,
       owner: this.scope.ownerPubKey,
-      version,
+      version: version as 3 | 5 | 6,
     });
 
     const txBuilder = this.createTxBuilder();
@@ -582,7 +585,7 @@ export default class Farm extends ModuleBase {
       }
     }
 
-    if (!deposited) {
+    if (!deposited && version !== 4) {
       const ledger = getAssociatedLedgerAccount({
         programId: new PublicKey(farmInfo.programId),
         poolId: new PublicKey(farmInfo.id),
@@ -609,7 +612,7 @@ export default class Farm extends ModuleBase {
         const ledgerInfo = ledgerLayout.decode(ledgerData!.data);
         if (ledgerInfo.deposited.isZero()) this.logAndCreateError("no deposited lp", { farmId: farmInfo.id });
       }
-    } else {
+    } else if (deposited) {
       if (deposited.isZero()) this.logAndCreateError("no deposited lp", { farmId: farmInfo.id });
     }
 
@@ -684,11 +687,14 @@ export default class Farm extends ModuleBase {
       version === 6
         ? makeWithdrawInstructionV6(insParams)
         : version === 5
-        ? makeWithdrawInstructionV5(insParams)
-        : makeWithdrawInstructionV3(insParams);
+          ? makeWithdrawInstructionV5(insParams)
+          : version === 4
+            ? makeWithdrawInstructionV4(insParams)
+            : makeWithdrawInstructionV3(insParams);
 
     const insType = {
       3: InstructionType.FarmV3Withdraw,
+      4: InstructionType.FarmV4Withdraw,
       5: InstructionType.FarmV5Withdraw,
       6: InstructionType.FarmV6Withdraw,
     };

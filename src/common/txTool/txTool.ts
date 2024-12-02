@@ -1,4 +1,5 @@
 import {
+  Commitment,
   Connection,
   PublicKey,
   sendAndConfirmTransaction,
@@ -7,24 +8,23 @@ import {
   TransactionInstruction,
   TransactionMessage,
   VersionedTransaction,
-  Commitment,
 } from "@solana/web3.js";
 import axios from "axios";
 
-import { SignAllTransactions, ComputeBudgetConfig } from "@/raydium/type";
-import { Api } from "@/api";
-import { Cluster } from "@/solana";
-import { TxVersion } from "./txType";
+import { Api } from "../../api";
+import { ComputeBudgetConfig, SignAllTransactions } from "../../raydium/type";
+import { Cluster } from "../../solana";
 import { Owner } from "../owner";
+import { CacheLTA, getMultipleLookupTableInfo, LOOKUP_TABLE_CACHE } from "./lookupTable";
+import { TxVersion } from "./txType";
 import {
-  getRecentBlockHash,
   addComputeBudget,
   checkLegacyTxSize,
   checkV0TxSize,
-  printSimulate,
   confirmTransaction,
+  getRecentBlockHash,
+  printSimulate,
 } from "./txUtils";
-import { CacheLTA, getMultipleLookupTableInfo, LOOKUP_TABLE_CACHE } from "./lookupTable";
 
 interface SolanaFeeInfo {
   min: number;
@@ -94,6 +94,7 @@ type TxUpdateParams = {
 };
 export interface MultiTxExecuteParam extends ExecuteParams {
   sequentially: boolean;
+  skipTxCount?: number;
   onTxUpdate?: (completeTxs: TxUpdateParams[]) => void;
 }
 export interface MultiTxBuildData<T = Record<string, any>> {
@@ -314,12 +315,21 @@ export class TxBuilder {
       signers: allSigners,
       instructionTypes: allInstructionTypes,
       execute: async (executeParams?: MultiTxExecuteParam) => {
-        const { sequentially, onTxUpdate, recentBlockHash: propBlockHash, skipPreflight = true } = executeParams || {};
+        const {
+          sequentially,
+          onTxUpdate,
+          skipTxCount = 0,
+          recentBlockHash: propBlockHash,
+          skipPreflight = true,
+        } = executeParams || {};
         const recentBlockHash = propBlockHash ?? (await getRecentBlockHash(this.connection, this.blockhashCommitment));
         if (this.owner?.isKeyPair) {
           if (sequentially) {
             const txIds: string[] = [];
+            let i = 0;
             for (const tx of allTransactions) {
+              ++i;
+              if (i <= skipTxCount) continue;
               const txId = await sendAndConfirmTransaction(
                 this.connection,
                 tx,
@@ -603,9 +613,9 @@ export class TxBuilder {
   }
 
   public async sizeCheckBuild(
-    props?: Record<string, any> & { computeBudgetConfig?: ComputeBudgetConfig },
+    props?: Record<string, any> & { computeBudgetConfig?: ComputeBudgetConfig; splitIns?: TransactionInstruction[] },
   ): Promise<MultiTxBuildData> {
-    const { computeBudgetConfig, ...extInfo } = props || {};
+    const { splitIns = [], computeBudgetConfig, ...extInfo } = props || {};
     const computeBudgetData: { instructions: TransactionInstruction[]; instructionTypes: string[] } =
       computeBudgetConfig
         ? addComputeBudget(computeBudgetConfig)
@@ -623,6 +633,7 @@ export class TxBuilder {
     const allSigners: Signer[][] = [];
 
     let instructionQueue: TransactionInstruction[] = [];
+    let splitInsIdx = 0;
     this.allInstructions.forEach((item) => {
       const _itemIns = [...instructionQueue, item];
       const _itemInsWithCompute = computeBudgetConfig ? [...computeBudgetData.instructions, ..._itemIns] : _itemIns;
@@ -632,15 +643,16 @@ export class TxBuilder {
       const _signer = [..._signerStrs.values()].map((i) => new PublicKey(i));
 
       if (
-        (instructionQueue.length < 12 &&
-          checkLegacyTxSize({ instructions: _itemInsWithCompute, payer: this.feePayer, signers: _signer })) ||
-        checkLegacyTxSize({ instructions: _itemIns, payer: this.feePayer, signers: _signer })
+        item !== splitIns[splitInsIdx] &&
+        instructionQueue.length < 12 &&
+        (checkLegacyTxSize({ instructions: _itemInsWithCompute, payer: this.feePayer, signers: _signer }) ||
+          checkLegacyTxSize({ instructions: _itemIns, payer: this.feePayer, signers: _signer }))
       ) {
         // current ins add to queue still not exceed tx size limit
         instructionQueue.push(item);
       } else {
         if (instructionQueue.length === 0) throw Error("item ins too big");
-
+        splitInsIdx += item === splitIns[splitInsIdx] ? 1 : 0;
         // if add computeBudget still not exceed tx size limit
         if (
           checkLegacyTxSize({
@@ -703,7 +715,13 @@ export class TxBuilder {
       signers: allSigners,
       instructionTypes: this.instructionTypes,
       execute: async (executeParams?: MultiTxExecuteParam) => {
-        const { sequentially, onTxUpdate, recentBlockHash: propBlockHash, skipPreflight = true } = executeParams || {};
+        const {
+          sequentially,
+          onTxUpdate,
+          skipTxCount = 0,
+          recentBlockHash: propBlockHash,
+          skipPreflight = true,
+        } = executeParams || {};
         const recentBlockHash = propBlockHash ?? (await getRecentBlockHash(this.connection, this.blockhashCommitment));
         allTransactions.forEach(async (tx, idx) => {
           tx.recentBlockhash = recentBlockHash;
@@ -712,8 +730,14 @@ export class TxBuilder {
         printSimulate(allTransactions);
         if (this.owner?.isKeyPair) {
           if (sequentially) {
+            let i = 0;
             const txIds: string[] = [];
             for (const tx of allTransactions) {
+              ++i;
+              if (i <= skipTxCount) {
+                txIds.push("tx skipped");
+                continue;
+              }
               const txId = await sendAndConfirmTransaction(
                 this.connection,
                 tx,
@@ -740,12 +764,22 @@ export class TxBuilder {
           };
         }
         if (this.signAllTransactions) {
-          const signedTxs = await this.signAllTransactions(allTransactions);
+          const needSignedTx = await this.signAllTransactions(
+            allTransactions.slice(skipTxCount, allTransactions.length),
+          );
+          const signedTxs = [...allTransactions.slice(0, skipTxCount), ...needSignedTx];
           if (sequentially) {
             let i = 0;
             const processedTxs: TxUpdateParams[] = [];
             const checkSendTx = async (): Promise<void> => {
               if (!signedTxs[i]) return;
+              if (i < skipTxCount) {
+                // success before, do not send again
+                processedTxs.push({ txId: "", status: "success", signedTx: signedTxs[i] });
+                onTxUpdate?.([...processedTxs]);
+                i++;
+                checkSendTx();
+              }
               const txId = await this.connection.sendRawTransaction(signedTxs[i].serialize(), { skipPreflight });
               processedTxs.push({ txId, status: "sent", signedTx: signedTxs[i] });
               onTxUpdate?.([...processedTxs]);
@@ -787,9 +821,16 @@ export class TxBuilder {
       computeBudgetConfig?: ComputeBudgetConfig;
       lookupTableCache?: CacheLTA;
       lookupTableAddress?: string[];
+      splitIns?: TransactionInstruction[];
     },
   ): Promise<MultiTxV0BuildData> {
-    const { computeBudgetConfig, lookupTableCache = {}, lookupTableAddress = [], ...extInfo } = props || {};
+    const {
+      computeBudgetConfig,
+      splitIns = [],
+      lookupTableCache = {},
+      lookupTableAddress = [],
+      ...extInfo
+    } = props || {};
     const lookupTableAddressAccount = {
       ...(this.cluster === "devnet" ? {} : LOOKUP_TABLE_CACHE),
       ...lookupTableCache,
@@ -820,19 +861,21 @@ export class TxBuilder {
     const allSigners: Signer[][] = [];
 
     let instructionQueue: TransactionInstruction[] = [];
+    let splitInsIdx = 0;
     this.allInstructions.forEach((item) => {
       const _itemIns = [...instructionQueue, item];
       const _itemInsWithCompute = computeBudgetConfig ? [...computeBudgetData.instructions, ..._itemIns] : _itemIns;
       if (
-        (instructionQueue.length < 12 &&
-          checkV0TxSize({ instructions: _itemInsWithCompute, payer: this.feePayer, lookupTableAddressAccount })) ||
-        checkV0TxSize({ instructions: _itemIns, payer: this.feePayer, lookupTableAddressAccount })
+        item !== splitIns[splitInsIdx] &&
+        instructionQueue.length < 12 &&
+        (checkV0TxSize({ instructions: _itemInsWithCompute, payer: this.feePayer, lookupTableAddressAccount }) ||
+          checkV0TxSize({ instructions: _itemIns, payer: this.feePayer, lookupTableAddressAccount }))
       ) {
         // current ins add to queue still not exceed tx size limit
         instructionQueue.push(item);
       } else {
         if (instructionQueue.length === 0) throw Error("item ins too big");
-
+        splitInsIdx += item === splitIns[splitInsIdx] ? 1 : 0;
         const lookupTableAddress: undefined | CacheLTA = {};
         for (const item of [...new Set<string>(allLTA)]) {
           if (lookupTableAddressAccount[item] !== undefined) lookupTableAddress[item] = lookupTableAddressAccount[item];
@@ -920,7 +963,13 @@ export class TxBuilder {
       signers: allSigners,
       instructionTypes: this.instructionTypes,
       execute: async (executeParams?: MultiTxExecuteParam) => {
-        const { sequentially, onTxUpdate, recentBlockHash: propBlockHash, skipPreflight = true } = executeParams || {};
+        const {
+          sequentially,
+          onTxUpdate,
+          skipTxCount = 0,
+          recentBlockHash: propBlockHash,
+          skipPreflight = true,
+        } = executeParams || {};
         allTransactions.map(async (tx, idx) => {
           if (allSigners[idx].length) tx.sign(allSigners[idx]);
           if (propBlockHash) tx.message.recentBlockhash = propBlockHash;
@@ -928,10 +977,18 @@ export class TxBuilder {
         printSimulate(allTransactions);
         if (this.owner?.isKeyPair) {
           if (sequentially) {
+            let i = 0;
             const txIds: string[] = [];
             for (const tx of allTransactions) {
+              ++i;
+              if (i <= skipTxCount) {
+                console.log("skip tx: ", i);
+                txIds.push("tx skipped");
+                continue;
+              }
               const txId = await this.connection.sendTransaction(tx, { skipPreflight });
               await confirmTransaction(this.connection, txId);
+
               txIds.push(txId);
             }
 
@@ -948,12 +1005,23 @@ export class TxBuilder {
           };
         }
         if (this.signAllTransactions) {
-          const signedTxs = await this.signAllTransactions(allTransactions);
+          const needSignedTx = await this.signAllTransactions(
+            allTransactions.slice(skipTxCount, allTransactions.length),
+          );
+          const signedTxs = [...allTransactions.slice(0, skipTxCount), ...needSignedTx];
           if (sequentially) {
             let i = 0;
             const processedTxs: TxUpdateParams[] = [];
             const checkSendTx = async (): Promise<void> => {
               if (!signedTxs[i]) return;
+              if (i < skipTxCount) {
+                // success before, do not send again
+                processedTxs.push({ txId: "", status: "success", signedTx: signedTxs[i] });
+                onTxUpdate?.([...processedTxs]);
+                i++;
+                checkSendTx();
+                return;
+              }
               const txId = await this.connection.sendTransaction(signedTxs[i], { skipPreflight });
               processedTxs.push({ txId, status: "sent", signedTx: signedTxs[i] });
               onTxUpdate?.([...processedTxs]);

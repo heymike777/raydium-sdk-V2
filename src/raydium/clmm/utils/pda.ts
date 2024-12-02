@@ -1,6 +1,6 @@
 import { PublicKey } from "@solana/web3.js";
 
-import { findProgramAddress, METADATA_PROGRAM_ID } from "@/common";
+import { findProgramAddress, METADATA_PROGRAM_ID } from "../../../common";
 
 import { i32ToBytes, u16ToBytes } from "./util";
 
@@ -140,4 +140,14 @@ export function getPdaLockPositionId(
   nonce: number;
 } {
   return findProgramAddress([POOL_LOCK_ID_SEED, positionId.toBuffer()], programId);
+}
+
+export function getPdaLockClPositionIdV2(
+  programId: PublicKey,
+  lockNftMint: PublicKey,
+): {
+  publicKey: PublicKey;
+  nonce: number;
+} {
+  return findProgramAddress([POOL_LOCK_ID_SEED, lockNftMint.toBuffer()], programId);
 }

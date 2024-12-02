@@ -1,11 +1,17 @@
-import { TransactionInstruction, SYSVAR_RENT_PUBKEY } from "@solana/web3.js";
-import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
-import { createInitializeAccountInstruction } from "@solana/spl-token";
-import { Connection, Keypair, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
+import {
+  Connection,
+  Keypair,
+  PublicKey,
+  SystemProgram,
+  SYSVAR_RENT_PUBKEY,
+  Transaction,
+  TransactionInstruction,
+} from "@solana/web3.js";
 import BN from "bn.js";
-import { MARKET_STATE_LAYOUT_V2 } from "./layout";
-import { struct, u16, u32, u64, u8 } from "@/marshmallow";
+import { createInitializeAccountInstruction, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { InstructionType } from "@/common/txTool/txType";
+import { struct, u16, u32, u64, u8 } from "../../marshmallow";
+import { MARKET_STATE_LAYOUT_V2 } from "./layout";
 
 type Transactions = {
   transaction: Transaction;
@@ -124,6 +130,8 @@ export async function makeCreateMarketInstruction({
     requestQueueSpace?: number;
     eventQueueSpace?: number;
     orderbookQueueSpace?: number;
+
+    lowestFeeMarket?: boolean;
   };
 }): Promise<Transactions> {
   const tx1 = new Transaction();
@@ -149,10 +157,6 @@ export async function makeCreateMarketInstruction({
     }),
     createInitializeAccountInstruction(marketInfo.baseVault.publicKey, marketInfo.baseMint, marketInfo.vaultOwner),
     createInitializeAccountInstruction(marketInfo.quoteVault.publicKey, marketInfo.quoteMint, marketInfo.vaultOwner),
-  );
-
-  const tx2 = new Transaction();
-  tx2.add(
     SystemProgram.createAccountWithSeed({
       fromPubkey: wallet,
       basePubkey: wallet,
@@ -162,13 +166,19 @@ export async function makeCreateMarketInstruction({
       space: MARKET_STATE_LAYOUT_V2.span,
       programId: marketInfo.programId,
     }),
+  );
+
+  const tx2 = new Transaction();
+  tx2.add(
     SystemProgram.createAccountWithSeed({
       fromPubkey: wallet,
       basePubkey: wallet,
       seed: marketInfo.requestQueue.seed,
       newAccountPubkey: marketInfo.requestQueue.publicKey,
-      lamports: await connection.getMinimumBalanceForRentExemption(marketInfo.requestQueueSpace ?? 5120 + 12),
-      space: marketInfo.requestQueueSpace ?? 5120 + 12,
+      lamports: marketInfo.lowestFeeMarket
+        ? 6208320
+        : await connection.getMinimumBalanceForRentExemption(marketInfo.requestQueueSpace ?? 5120 + 12),
+      space: marketInfo.lowestFeeMarket ? 764 : marketInfo.requestQueueSpace ?? 5120 + 12,
       programId: marketInfo.programId,
     }),
     SystemProgram.createAccountWithSeed({
@@ -176,8 +186,10 @@ export async function makeCreateMarketInstruction({
       basePubkey: wallet,
       seed: marketInfo.eventQueue.seed,
       newAccountPubkey: marketInfo.eventQueue.publicKey,
-      lamports: await connection.getMinimumBalanceForRentExemption(marketInfo.eventQueueSpace ?? 262144 + 12),
-      space: marketInfo.eventQueueSpace ?? 262144 + 12,
+      lamports: marketInfo.lowestFeeMarket
+        ? 79594560
+        : await connection.getMinimumBalanceForRentExemption(marketInfo.eventQueueSpace ?? 262144 + 12),
+      space: marketInfo.lowestFeeMarket ? 11308 : marketInfo.eventQueueSpace ?? 262144 + 12,
       programId: marketInfo.programId,
     }),
     SystemProgram.createAccountWithSeed({
@@ -185,8 +197,10 @@ export async function makeCreateMarketInstruction({
       basePubkey: wallet,
       seed: marketInfo.bids.seed,
       newAccountPubkey: marketInfo.bids.publicKey,
-      lamports: await connection.getMinimumBalanceForRentExemption(marketInfo.orderbookQueueSpace ?? 65536 + 12),
-      space: marketInfo.orderbookQueueSpace ?? 65536 + 12,
+      lamports: marketInfo.lowestFeeMarket
+        ? 101977920
+        : await connection.getMinimumBalanceForRentExemption(marketInfo.orderbookQueueSpace ?? 65536 + 12),
+      space: marketInfo.lowestFeeMarket ? 14524 : marketInfo.orderbookQueueSpace ?? 65536 + 12,
       programId: marketInfo.programId,
     }),
     SystemProgram.createAccountWithSeed({
@@ -194,8 +208,10 @@ export async function makeCreateMarketInstruction({
       basePubkey: wallet,
       seed: marketInfo.asks.seed,
       newAccountPubkey: marketInfo.asks.publicKey,
-      lamports: await connection.getMinimumBalanceForRentExemption(marketInfo.orderbookQueueSpace ?? 65536 + 12),
-      space: marketInfo.orderbookQueueSpace ?? 65536 + 12,
+      lamports: marketInfo.lowestFeeMarket
+        ? 101977920
+        : await connection.getMinimumBalanceForRentExemption(marketInfo.orderbookQueueSpace ?? 65536 + 12),
+      space: marketInfo.lowestFeeMarket ? 14524 : marketInfo.orderbookQueueSpace ?? 65536 + 12,
       programId: marketInfo.programId,
     }),
     initializeMarket({

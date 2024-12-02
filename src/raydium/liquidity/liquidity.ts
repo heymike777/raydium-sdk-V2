@@ -1,58 +1,61 @@
-import { PublicKey } from "@solana/web3.js";
-import { AccountLayout, NATIVE_MINT, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import { PublicKey, TransactionInstruction } from "@solana/web3.js";
 import {
-  ApiV3PoolInfoConcentratedItem,
-  ApiV3PoolInfoStandardItem,
   AmmV4Keys,
   AmmV5Keys,
+  ApiV3PoolInfoConcentratedItem,
+  ApiV3PoolInfoStandardItem,
   FormatFarmInfoOutV6,
-} from "@/api/type";
-import { Token, TokenAmount, Percent } from "@/module";
-import { toToken } from "../token";
+} from "../../api/type";
+import { AccountLayout, NATIVE_MINT, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import { getMultipleAccountsInfoWithCustomFlags } from "@/common/accountInfo";
 import { BN_ZERO, divCeil } from "@/common/bignumber";
 import { getATAAddress } from "@/common/pda";
-import { InstructionType, TxVersion } from "@/common/txTool/txType";
-import { MakeMultiTxData, MakeTxData } from "@/common/txTool/txTool";
 import { BNDivCeil } from "@/common/transfer";
-import { getMultipleAccountsInfoWithCustomFlags } from "@/common/accountInfo";
-import ModuleBase, { ModuleBaseProps } from "../moduleBase";
-import {
-  AmountSide,
-  AddLiquidityParams,
-  RemoveParams,
-  CreatePoolParam,
-  CreatePoolAddress,
-  ComputeAmountOutParam,
-  ComputeAmountInParam,
-  SwapParam,
-  AmmRpcData,
-} from "./type";
-import {
-  makeAddLiquidityInstruction,
-  removeLiquidityInstruction,
-  createPoolV4InstructionV2,
-  makeAMMSwapInstruction,
-} from "./instruction";
-import { ComputeBudgetConfig } from "../type";
-import { ClmmInstrument } from "../clmm/instrument";
-import { getAssociatedPoolKeys, getAssociatedConfigId, toAmmComputePoolInfo } from "./utils";
-import { createPoolFeeLayout, liquidityStateV4Layout } from "./layout";
+import { MakeMultiTxData, MakeTxData } from "@/common/txTool/txTool";
+import { InstructionType, TxVersion } from "@/common/txTool/txType";
+import { Percent, Token, TokenAmount } from "../../module";
 import {
   FARM_PROGRAM_TO_VERSION,
   FarmLedger,
-  makeWithdrawInstructionV3,
-  makeWithdrawInstructionV5,
-  makeWithdrawInstructionV6,
   createAssociatedLedgerAccountInstruction,
   getAssociatedLedgerAccount,
   getFarmLedgerLayout,
-} from "@/raydium/farm";
-import { StableLayout, getStablePrice, getDyByDxBaseIn, getDxByDyBaseIn } from "./stable";
-import { LIQUIDITY_FEES_NUMERATOR, LIQUIDITY_FEES_DENOMINATOR } from "./constant";
+  makeWithdrawInstructionV3,
+  makeWithdrawInstructionV5,
+  makeWithdrawInstructionV6,
+} from "../../raydium/farm";
+import { ClmmInstrument } from "../clmm/instrument";
+import ModuleBase, { ModuleBaseProps } from "../moduleBase";
+import { toToken } from "../token";
+import { ComputeBudgetConfig } from "../type";
+import { LIQUIDITY_FEES_DENOMINATOR, LIQUIDITY_FEES_NUMERATOR } from "./constant";
+import {
+  createPoolV4InstructionV2,
+  makeAMMSwapInstruction,
+  makeAddLiquidityInstruction,
+  removeLiquidityInstruction,
+} from "./instruction";
+import { createPoolFeeLayout, liquidityStateV4Layout } from "./layout";
+import { StableLayout, getDxByDyBaseIn, getDyByDxBaseIn, getStablePrice } from "./stable";
+import {
+  AddLiquidityParams,
+  AmmRpcData,
+  AmountSide,
+  ComputeAmountInParam,
+  ComputeAmountOutParam,
+  CreatePoolAddress,
+  CreatePoolParam,
+  CreateMarketAndPoolParam,
+  RemoveParams,
+  SwapParam,
+} from "./type";
+import { getAssociatedConfigId, getAssociatedPoolKeys, toAmmComputePoolInfo } from "./utils";
 
 import BN from "bn.js";
 import Decimal from "decimal.js";
-import { WSOLMint } from "@/common";
+import { AMM_V4, FEE_DESTINATION_ID, OPEN_BOOK_PROGRAM, WSOLMint } from "@/common";
+import { generatePubKey } from "../account";
+import { makeCreateMarketInstruction, MarketExtInfo } from "../marketV2";
 
 export default class LiquidityModule extends ModuleBase {
   public stableLayout: StableLayout;
@@ -81,7 +84,7 @@ export default class LiquidityModule extends ModuleBase {
     amount: string | Decimal;
     slippage: Percent;
     baseIn?: boolean;
-  }): { anotherAmount: TokenAmount; maxAnotherAmount: TokenAmount; liquidity: BN } {
+  }): { anotherAmount: TokenAmount; maxAnotherAmount: TokenAmount; minAnotherAmount: TokenAmount; liquidity: BN } {
     const inputAmount = new BN(new Decimal(amount).mul(10 ** poolInfo[baseIn ? "mintA" : "mintB"].decimals).toFixed(0));
     const _anotherToken = toToken(poolInfo[baseIn ? "mintB" : "mintA"]);
 
@@ -129,15 +132,19 @@ export default class LiquidityModule extends ModuleBase {
     this.logDebug("liquidity:", liquidity.toString());
 
     const _slippage = new Percent(new BN(1)).add(slippage);
+    const _slippageMin = new Percent(new BN(1)).sub(slippage);
     const slippageAdjustedAmount = _slippage.mul(amountRaw).quotient;
+    const slippageAdjustedMinAmount = _slippageMin.mul(amountRaw).quotient;
 
     const _anotherAmount = new TokenAmount(_anotherToken, amountRaw);
     const _maxAnotherAmount = new TokenAmount(_anotherToken, slippageAdjustedAmount);
+    const _minAnotherAmount = new TokenAmount(_anotherToken, slippageAdjustedMinAmount);
     this.logDebug("anotherAmount:", _anotherAmount.toFixed(), "maxAnotherAmount:", _maxAnotherAmount.toFixed());
 
     return {
       anotherAmount: _anotherAmount,
       maxAnotherAmount: _maxAnotherAmount,
+      minAnotherAmount: _minAnotherAmount,
       liquidity,
     };
   }
@@ -152,6 +159,7 @@ export default class LiquidityModule extends ModuleBase {
       poolKeys: propPoolKeys,
       amountInA,
       amountInB,
+      otherAmountMin,
       fixedSide,
       config,
       txVersion,
@@ -255,6 +263,7 @@ export default class LiquidityModule extends ModuleBase {
           },
           baseAmountIn: baseAmountRaw,
           quoteAmountIn: quoteAmountRaw,
+          otherAmountMin: otherAmountMin.raw,
           fixedSide: _fixedSide,
         }),
       ],
@@ -273,15 +282,26 @@ export default class LiquidityModule extends ModuleBase {
   public async removeLiquidity<T extends TxVersion>(params: RemoveParams<T>): Promise<Promise<MakeTxData<T>>> {
     if (this.scope.availability.removeStandardPosition === false)
       this.logAndCreateError("remove liquidity feature disabled in your region");
-    const { poolInfo, poolKeys: propPoolKeys, amountIn, config, txVersion, computeBudgetConfig } = params;
+    const {
+      poolInfo,
+      poolKeys: propPoolKeys,
+      lpAmount,
+      baseAmountMin,
+      quoteAmountMin,
+      config,
+      txVersion,
+      computeBudgetConfig,
+    } = params;
     const poolKeys = propPoolKeys ?? (await this.getAmmPoolKeys(poolInfo.id));
     const [baseMint, quoteMint, lpMint] = [
       new PublicKey(poolInfo.mintA.address),
       new PublicKey(poolInfo.mintB.address),
       new PublicKey(poolInfo.lpMint.address),
     ];
-    this.logDebug("amountIn:", amountIn);
-    if (amountIn.isZero()) this.logAndCreateError("amount must greater than zero", "amountIn", amountIn.toString());
+    this.logDebug("lpAmount:", lpAmount);
+    this.logDebug("baseAmountMin:", baseAmountMin);
+    this.logDebug("quoteAmountMin:", quoteAmountMin);
+    if (lpAmount.isZero()) this.logAndCreateError("amount must greater than zero", "lpAmount", lpAmount.toString());
 
     const { account } = this.scope;
     const lpTokenAccount = await account.getCreatedTokenAccount({
@@ -335,7 +355,9 @@ export default class LiquidityModule extends ModuleBase {
             quoteTokenAccount: _quoteTokenAccount!,
             owner: this.scope.ownerPubKey,
           },
-          amountIn,
+          lpAmount,
+          baseAmountMin,
+          quoteAmountMin,
         }),
       ],
       lookupTableAddress: poolKeys.lookupTableAccount ? [poolKeys.lookupTableAccount] : [],
@@ -467,7 +489,7 @@ export default class LiquidityModule extends ModuleBase {
         programId: new PublicKey(farmInfo.programId),
         poolId: new PublicKey(farmInfo.id),
         owner: this.scope.ownerPubKey,
-        version: farmVersion,
+        version: farmVersion as 3 | 5 | 6,
       });
       let ledgerInfo: FarmLedger | undefined = undefined;
       const ledgerData = await this.scope.connection.getAccountInfo(ledger);
@@ -547,7 +569,9 @@ export default class LiquidityModule extends ModuleBase {
         quoteTokenAccount,
         owner: this.scope.ownerPubKey,
       },
-      amountIn,
+      lpAmount: amountIn,
+      baseAmountMin: 0,
+      quoteAmountMin: 0,
     });
 
     txBuilder.addInstruction({
@@ -710,6 +734,274 @@ export default class LiquidityModule extends ModuleBase {
         address: createPoolKeys,
       },
     }) as Promise<MakeTxData<T, { address: CreatePoolAddress }>>;
+  }
+
+  public async createMarketAndPoolV4<T extends TxVersion>({
+    programId = AMM_V4,
+    marketProgram = OPEN_BOOK_PROGRAM,
+    feeDestinationId = FEE_DESTINATION_ID,
+    tokenProgram,
+
+    baseMintInfo,
+    quoteMintInfo,
+    baseAmount,
+    quoteAmount,
+    startTime,
+
+    ownerInfo,
+    lowestFeeMarket,
+    assignSeed,
+
+    associatedOnly = false,
+    checkCreateATAOwner = false,
+
+    lotSize = 1,
+    tickSize = 0.01,
+
+    txVersion,
+    computeBudgetConfig,
+  }: CreateMarketAndPoolParam<T>): Promise<
+    MakeMultiTxData<T, { address: CreatePoolAddress & MarketExtInfo["address"] }>
+  > {
+    const wallet = this.scope.ownerPubKey;
+    const payer = ownerInfo.feePayer || this.scope.owner?.publicKey;
+    const mintAUseSOLBalance = ownerInfo.useSOLBalance && baseMintInfo.mint.equals(NATIVE_MINT);
+    const mintBUseSOLBalance = ownerInfo.useSOLBalance && quoteMintInfo.mint.equals(NATIVE_MINT);
+
+    const seed = assignSeed
+      ? `${baseMintInfo.mint.toBase58().slice(0, 7)}-${quoteMintInfo.mint.toBase58().slice(0, 7)}-${assignSeed}`
+      : undefined;
+
+    const market = generatePubKey({
+      fromPublicKey: wallet,
+      programId: marketProgram,
+      assignSeed: seed ? `${seed}-market` : seed,
+    });
+    const requestQueue = generatePubKey({
+      fromPublicKey: wallet,
+      programId: marketProgram,
+      assignSeed: seed ? `${seed}-request` : seed,
+    });
+    const eventQueue = generatePubKey({
+      fromPublicKey: wallet,
+      programId: marketProgram,
+      assignSeed: seed ? `${seed}-event` : seed,
+    });
+    const bids = generatePubKey({
+      fromPublicKey: wallet,
+      programId: marketProgram,
+      assignSeed: seed ? `${seed}-bids` : seed,
+    });
+    const asks = generatePubKey({
+      fromPublicKey: wallet,
+      programId: marketProgram,
+      assignSeed: seed ? `${seed}-asks` : seed,
+    });
+    const baseVault = generatePubKey({
+      fromPublicKey: wallet,
+      programId: TOKEN_PROGRAM_ID,
+      assignSeed: seed ? `${seed}-baseVault` : seed,
+    });
+    const quoteVault = generatePubKey({
+      fromPublicKey: wallet,
+      programId: TOKEN_PROGRAM_ID,
+      assignSeed: seed ? `${seed}-quoteVault` : seed,
+    });
+
+    const feeRateBps = 0;
+    const quoteDustThreshold = new BN(100);
+    function getVaultOwnerAndNonce() {
+      const vaultSignerNonce = new BN(0);
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        try {
+          const vaultOwner = PublicKey.createProgramAddressSync(
+            [market.publicKey.toBuffer(), vaultSignerNonce.toArrayLike(Buffer, "le", 8)],
+            marketProgram,
+          );
+          return { vaultOwner, vaultSignerNonce };
+        } catch (e) {
+          vaultSignerNonce.iaddn(1);
+          if (vaultSignerNonce.gt(new BN(25555))) throw Error("find vault owner error");
+        }
+      }
+    }
+    const { vaultOwner, vaultSignerNonce } = getVaultOwnerAndNonce();
+    const baseLotSize = new BN(Math.round(10 ** baseMintInfo.decimals * lotSize));
+    const quoteLotSize = new BN(Math.round(lotSize * 10 ** quoteMintInfo.decimals * tickSize));
+
+    if (baseLotSize.eq(BN_ZERO)) throw Error("lot size is too small");
+    if (quoteLotSize.eq(BN_ZERO)) throw Error("tick size or lot size is too small");
+    const allTxArr = await makeCreateMarketInstruction({
+      connection: this.scope.connection,
+      wallet: this.scope.ownerPubKey,
+      marketInfo: {
+        programId: marketProgram,
+        vaultOwner,
+        baseMint: baseMintInfo.mint,
+        quoteMint: quoteMintInfo.mint,
+
+        id: market,
+        baseVault,
+        quoteVault,
+        requestQueue,
+        eventQueue,
+        bids,
+        asks,
+
+        feeRateBps,
+        quoteDustThreshold,
+        vaultSignerNonce,
+        baseLotSize,
+        quoteLotSize,
+        lowestFeeMarket,
+      },
+    });
+
+    const txBuilder = this.createTxBuilder();
+    txBuilder.addInstruction({
+      instructions: allTxArr[0].transaction.instructions,
+      signers: allTxArr[0].signer,
+    });
+
+    for await (const txData of allTxArr.slice(1, allTxArr.length)) {
+      txBuilder.addInstruction({
+        instructions: txData.transaction.instructions,
+        signers: txData.signer,
+        instructionTypes: txData.instructionTypes,
+      });
+    }
+
+    const { account: ownerTokenAccountBase, instructionParams: ownerTokenAccountBaseInstruction } =
+      await this.scope.account.getOrCreateTokenAccount({
+        mint: baseMintInfo.mint,
+        owner: this.scope.ownerPubKey,
+        createInfo: mintAUseSOLBalance
+          ? {
+              payer: payer!,
+              amount: baseAmount,
+            }
+          : undefined,
+        notUseTokenAccount: mintAUseSOLBalance,
+        skipCloseAccount: !mintAUseSOLBalance,
+        associatedOnly: mintAUseSOLBalance ? false : associatedOnly,
+        checkCreateATAOwner,
+        assignSeed: mintAUseSOLBalance && seed ? `${seed}-wsol` : undefined,
+      });
+
+    txBuilder.addInstruction(ownerTokenAccountBaseInstruction || {});
+
+    const { account: ownerTokenAccountQuote, instructionParams: ownerTokenAccountQuoteInstruction } =
+      await this.scope.account.getOrCreateTokenAccount({
+        mint: quoteMintInfo.mint,
+        owner: this.scope.ownerPubKey,
+        createInfo: mintBUseSOLBalance
+          ? {
+              payer: payer!,
+              amount: quoteAmount,
+            }
+          : undefined,
+
+        notUseTokenAccount: mintBUseSOLBalance,
+        skipCloseAccount: !mintBUseSOLBalance,
+        associatedOnly: mintBUseSOLBalance ? false : associatedOnly,
+        checkCreateATAOwner,
+        assignSeed: mintBUseSOLBalance && seed ? `${seed}-wsol` : undefined,
+      });
+    txBuilder.addInstruction(ownerTokenAccountQuoteInstruction || {});
+
+    if (ownerTokenAccountBase === undefined) throw Error("you don't has base token account");
+    if (ownerTokenAccountQuote === undefined) throw Error("you don't has quote token account");
+
+    // create pool ins
+    const poolInfo = getAssociatedPoolKeys({
+      version: 4,
+      marketVersion: 3,
+      marketId: market.publicKey,
+      baseMint: baseMintInfo.mint,
+      quoteMint: quoteMintInfo.mint,
+      baseDecimals: baseMintInfo.decimals,
+      quoteDecimals: quoteMintInfo.decimals,
+      programId,
+      marketProgramId: marketProgram,
+    });
+
+    const createPoolKeys = {
+      programId,
+      ammId: poolInfo.id,
+      ammAuthority: poolInfo.authority,
+      ammOpenOrders: poolInfo.openOrders,
+      lpMint: poolInfo.lpMint,
+      coinMint: poolInfo.baseMint,
+      pcMint: poolInfo.quoteMint,
+      coinVault: poolInfo.baseVault,
+      pcVault: poolInfo.quoteVault,
+      withdrawQueue: poolInfo.withdrawQueue,
+      ammTargetOrders: poolInfo.targetOrders,
+      poolTempLp: poolInfo.lpVault,
+      marketProgramId: poolInfo.marketProgramId,
+      marketId: poolInfo.marketId,
+      ammConfigId: poolInfo.configId,
+      feeDestinationId,
+    };
+
+    const { instruction, instructionType } = createPoolV4InstructionV2({
+      ...createPoolKeys,
+      userWallet: this.scope.ownerPubKey,
+      userCoinVault: ownerTokenAccountBase,
+      userPcVault: ownerTokenAccountQuote,
+      userLpVault: getATAAddress(this.scope.ownerPubKey, poolInfo.lpMint, tokenProgram).publicKey,
+
+      nonce: poolInfo.nonce,
+      openTime: startTime,
+      coinAmount: baseAmount,
+      pcAmount: quoteAmount,
+    });
+
+    txBuilder.addInstruction({
+      instructions: [instruction],
+      instructionTypes: [instructionType],
+    });
+
+    const splitIns =
+      mintAUseSOLBalance || mintBUseSOLBalance
+        ? ([
+            ownerTokenAccountBaseInstruction?.instructions?.[0] || ownerTokenAccountQuoteInstruction?.instructions?.[0],
+          ].filter((i) => !!i) as TransactionInstruction[])
+        : undefined;
+
+    if (txVersion === TxVersion.V0)
+      return txBuilder.sizeCheckBuildV0({
+        computeBudgetConfig,
+        splitIns,
+        address: {
+          requestQueue: requestQueue.publicKey,
+          eventQueue: eventQueue.publicKey,
+          bids: bids.publicKey,
+          asks: asks.publicKey,
+          baseVault: baseVault.publicKey,
+          quoteVault: quoteVault.publicKey,
+          baseMint: new PublicKey(baseMintInfo.mint),
+          quoteMin: new PublicKey(quoteMintInfo.mint),
+          ...createPoolKeys,
+        },
+      }) as Promise<MakeMultiTxData<T, { address: CreatePoolAddress & MarketExtInfo["address"] }>>;
+
+    return txBuilder.sizeCheckBuild({
+      computeBudgetConfig,
+      splitIns,
+      address: {
+        requestQueue: requestQueue.publicKey,
+        eventQueue: eventQueue.publicKey,
+        bids: bids.publicKey,
+        asks: asks.publicKey,
+        baseVault: baseVault.publicKey,
+        quoteVault: quoteVault.publicKey,
+        baseMint: new PublicKey(baseMintInfo.mint),
+        quoteMin: new PublicKey(quoteMintInfo.mint),
+        ...createPoolKeys,
+      },
+    }) as Promise<MakeMultiTxData<T, { address: CreatePoolAddress & MarketExtInfo["address"] }>>;
   }
 
   public async getCreatePoolFee({ programId }: { programId: PublicKey }): Promise<BN> {

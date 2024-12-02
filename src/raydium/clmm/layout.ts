@@ -1,4 +1,4 @@
-import { blob, bool, i128, i64, publicKey, s32, seq, struct, u128, u16, u32, u64, u8 } from "@/marshmallow";
+import { blob, bool, i128, i64, publicKey, s32, seq, struct, u128, u16, u32, u64, u8 } from "../../marshmallow";
 
 import { TICK_ARRAY_SIZE } from "./utils/tick";
 import { EXTENSION_TICKARRAY_BITMAP_SIZE } from "./utils/tickarrayBitmap";
@@ -160,5 +160,17 @@ export const LockPositionLayout = struct([
   publicKey("poolId"),
   publicKey("positionId"),
   publicKey("nftAccount"),
+  seq(u64(), 8),
+]);
+
+export const LockClPositionLayoutV2 = struct([
+  blob(8),
+  u8("bump"),
+  publicKey("lockOwner"),
+  publicKey("poolId"),
+  publicKey("positionId"),
+  publicKey("nftAccount"),
+  publicKey("lockNftMint"),
+  u64("recentEpoch"),
   seq(u64(), 8),
 ]);

@@ -1,12 +1,12 @@
 import { EpochInfo, PublicKey } from "@solana/web3.js";
-import { ApiCpmmConfigInfo, ApiV3PoolInfoStandardItemCpmm, ApiV3Token, CpmmKeys } from "@/api/type";
-import { TxVersion } from "@/common/txTool/txType";
 import BN from "bn.js";
-import { ComputeBudgetConfig, GetTransferAmountFee } from "@/raydium/type";
-import { SwapResult } from "./curve/calculator";
-import { Percent } from "@/module";
-import { CpmmPoolInfoLayout } from "./layout";
 import Decimal from "decimal.js";
+import { ApiCpmmConfigInfo, ApiV3PoolInfoStandardItemCpmm, ApiV3Token, CpmmKeys } from "../../api/type";
+import { TxVersion } from "../../common/txTool/txType";
+import { Percent } from "../../module";
+import { ComputeBudgetConfig, GetTransferAmountFee } from "../../raydium/type";
+import { SwapResult } from "./curve/calculator";
+import { CpmmPoolInfoLayout } from "./layout";
 
 export interface CpmmConfigInfoInterface {
   bump: number;
@@ -166,3 +166,75 @@ export type CpmmComputeData = {
   mintB: ApiV3Token;
   authority: PublicKey;
 } & Omit<CpmmRpcData, "configInfo" | "mintA" | "mintB">;
+
+export type CpmmLockExtInfo = {
+  nftMint: PublicKey;
+  nftAccount: PublicKey;
+  metadataAccount: PublicKey;
+  lockPda: PublicKey;
+  userLpVault: PublicKey;
+  lockLpVault: PublicKey;
+};
+
+export interface LockCpmmLpParams<T = TxVersion.LEGACY> {
+  poolInfo: ApiV3PoolInfoStandardItemCpmm;
+  poolKeys?: CpmmKeys;
+  lpAmount: BN;
+  programId?: PublicKey;
+  authProgram?: PublicKey;
+  feePayer?: PublicKey;
+  withMetadata?: boolean;
+  getEphemeralSigners?: (k: number) => any;
+  computeBudgetConfig?: ComputeBudgetConfig;
+  txVersion?: T;
+}
+
+export interface HarvestLockCpmmLpParams<T = TxVersion.LEGACY> {
+  poolInfo: ApiV3PoolInfoStandardItemCpmm;
+  poolKeys?: CpmmKeys;
+
+  nftMint: PublicKey;
+  lpFeeAmount: BN;
+
+  programId?: PublicKey;
+  authProgram?: PublicKey;
+  clmmProgram?: PublicKey;
+
+  cpmmProgram?: {
+    programId?: PublicKey;
+    authProgram?: PublicKey;
+  };
+
+  feePayer?: PublicKey;
+
+  withMetadata?: boolean;
+  getEphemeralSigners?: (k: number) => any;
+  computeBudgetConfig?: ComputeBudgetConfig;
+  txVersion?: T;
+}
+
+export interface CpmmLockNftBasicInfo {
+  name: string;
+  symbol: string;
+  description: string;
+  external_url: string;
+  collection: {
+    name: string;
+    family: string;
+  };
+  image: string;
+}
+
+export interface CpmmLockNftInfo extends CpmmLockNftBasicInfo {
+  poolInfo: ApiV3PoolInfoStandardItemCpmm;
+  positionInfo: {
+    percentage: number;
+    usdValue: number;
+    unclaimedFee: {
+      lp: number;
+      amountA: number;
+      amountB: number;
+      useValue: number;
+    };
+  };
+}

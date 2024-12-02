@@ -1,40 +1,51 @@
 import { PublicKey } from "@solana/web3.js";
-import { NATIVE_MINT, TOKEN_PROGRAM_ID, AccountLayout } from "@solana/spl-token";
-import { ApiV3PoolInfoConcentratedItem, ApiV3PoolInfoStandardItemCpmm, CpmmKeys } from "@/api/type";
-import { Percent } from "@/module";
+import { ApiV3PoolInfoStandardItemCpmm, CpmmKeys } from "../../api/type";
+import { AccountLayout, NATIVE_MINT, TOKEN_PROGRAM_ID } from "@solana/spl-token";
 import { BN_ZERO } from "@/common/bignumber";
 import { getATAAddress } from "@/common/pda";
 import { WSOLMint } from "@/common/pubKey";
-import { InstructionType, TxVersion } from "@/common/txTool/txType";
 import { MakeTxData } from "@/common/txTool/txTool";
+import { InstructionType, TxVersion } from "@/common/txTool/txType";
+import { Percent } from "../../module";
 import { CurveCalculator } from "./curve/calculator";
 
-import ModuleBase, { ModuleBaseProps } from "../moduleBase";
+import BN from "bn.js";
+import Decimal from "decimal.js";
 import {
-  CreateCpmmPoolParam,
-  CreateCpmmPoolAddress,
-  AddCpmmLiquidityParams,
-  WithdrawCpmmLiquidityParams,
-  CpmmSwapParams,
-  ComputePairAmountParams,
-  CpmmRpcData,
-  CpmmComputeData,
-} from "./type";
-import { getCreatePoolKeys, getPdaObservationId } from "./pda";
+  fetchMultipleMintInfos,
+  getMultipleAccountsInfoWithCustomFlags,
+  getTransferAmountFeeV2,
+  LOCK_CPMM_AUTH,
+  LOCK_CPMM_PROGRAM,
+} from "@/common";
+import { GetTransferAmountFee, ReturnTypeFetchMultipleMintInfos } from "../../raydium/type";
+import ModuleBase, { ModuleBaseProps } from "../moduleBase";
+import { toApiV3Token, toFeeConfig } from "../token";
 import {
   makeCreateCpmmPoolInInstruction,
   makeDepositCpmmInInstruction,
-  makeWithdrawCpmmInInstruction,
   makeSwapCpmmBaseInInInstruction,
   makeSwapCpmmBaseOutInInstruction,
+  makeWithdrawCpmmInInstruction,
+  makeCpmmLockInstruction,
+  collectCpFeeInstruction,
 } from "./instruction";
-import BN from "bn.js";
-import { CpmmPoolInfoLayout, CpmmConfigInfoLayout } from "./layout";
-import Decimal from "decimal.js";
-import { fetchMultipleMintInfos, getMultipleAccountsInfoWithCustomFlags, getTransferAmountFeeV2 } from "@/common";
-import { GetTransferAmountFee, ReturnTypeFetchMultipleMintInfos } from "@/raydium/type";
-import { toApiV3Token, toFeeConfig } from "../token";
-import { getPdaPoolAuthority } from "./pda";
+import { CpmmConfigInfoLayout, CpmmPoolInfoLayout } from "./layout";
+import { getCreatePoolKeys, getPdaObservationId, getPdaPoolAuthority } from "./pda";
+import {
+  AddCpmmLiquidityParams,
+  ComputePairAmountParams,
+  CpmmComputeData,
+  CpmmLockExtInfo,
+  CpmmRpcData,
+  CpmmSwapParams,
+  CreateCpmmPoolAddress,
+  CreateCpmmPoolParam,
+  LockCpmmLpParams,
+  HarvestLockCpmmLpParams,
+  WithdrawCpmmLiquidityParams,
+} from "./type";
+import { getCpLockPda } from "./pda";
 
 export default class CpmmModule extends ModuleBase {
   constructor(params: ModuleBaseProps) {
@@ -270,6 +281,7 @@ export default class CpmmModule extends ModuleBase {
         authority: getPdaPoolAuthority(rpcData.programId).publicKey.toBase58(),
         mintLp: lpMint,
         config: configInfo,
+        observationId: getPdaObservationId(rpcData.programId, new PublicKey(poolId)).publicKey.toBase58(),
       },
       rpcData,
     };
@@ -772,6 +784,147 @@ export default class CpmmModule extends ModuleBase {
     return txBuilder.versionBuild({ txVersion }) as Promise<MakeTxData<T>>;
   }
 
+  public async lockLp<T extends TxVersion>(params: LockCpmmLpParams<T>): Promise<MakeTxData<CpmmLockExtInfo>> {
+    const { poolInfo, lpAmount, computeBudgetConfig, txVersion } = params;
+
+    if (lpAmount.isZero())
+      this.logAndCreateError("lpAmount must greater than zero", {
+        lpAmount: lpAmount.toString(),
+      });
+
+    const txBuilder = this.createTxBuilder();
+
+    const poolKeys = params.poolKeys ?? (await this.getCpmmPoolKeys(poolInfo.id));
+
+    const insData = await makeCpmmLockInstruction({
+      poolInfo,
+      poolKeys,
+      ownerInfo: {
+        wallet: this.scope.ownerPubKey,
+        feePayer: params.feePayer ?? this.scope.ownerPubKey,
+      },
+      lockProgram: params.programId ?? LOCK_CPMM_PROGRAM,
+      lockAuthProgram: params.authProgram ?? LOCK_CPMM_AUTH,
+      lpAmount,
+      withMetadata: params.withMetadata ?? true,
+      getEphemeralSigners: params.getEphemeralSigners,
+    });
+
+    txBuilder.addInstruction(insData);
+    txBuilder.addCustomComputeBudget(computeBudgetConfig);
+    return txBuilder.versionBuild({ txVersion, extInfo: insData.address }) as Promise<MakeTxData<CpmmLockExtInfo>>;
+  }
+
+  public async harvestLockLp<T extends TxVersion>(params: HarvestLockCpmmLpParams<T>): Promise<MakeTxData> {
+    const {
+      poolInfo,
+      lpFeeAmount,
+      nftMint,
+      programId = LOCK_CPMM_PROGRAM,
+      authProgram = LOCK_CPMM_AUTH,
+      cpmmProgram,
+      computeBudgetConfig,
+      txVersion,
+    } = params;
+
+    if (lpFeeAmount.isZero())
+      this.logAndCreateError("lpFeeAmount must greater than zero", {
+        lpAmount: lpFeeAmount.toString(),
+      });
+
+    const feePayer = params.feePayer || this.scope.ownerPubKey;
+
+    const txBuilder = this.createTxBuilder();
+
+    const [mintA, mintB] = [new PublicKey(poolInfo.mintA.address), new PublicKey(poolInfo.mintB.address)];
+
+    const mintAUseSOLBalance = mintA.equals(WSOLMint);
+    const mintBUseSOLBalance = mintB.equals(WSOLMint);
+
+    let tokenAccountA: PublicKey | undefined = undefined;
+    let tokenAccountB: PublicKey | undefined = undefined;
+    const { account: _ownerTokenAccountA, instructionParams: accountAInstructions } =
+      await this.scope.account.getOrCreateTokenAccount({
+        tokenProgram: poolInfo.mintA.programId,
+        mint: new PublicKey(poolInfo.mintA.address),
+        notUseTokenAccount: mintAUseSOLBalance,
+        owner: this.scope.ownerPubKey,
+        createInfo: {
+          payer: this.scope.ownerPubKey,
+          amount: 0,
+        },
+        skipCloseAccount: !mintAUseSOLBalance,
+        associatedOnly: mintAUseSOLBalance ? false : true,
+        checkCreateATAOwner: false,
+      });
+    tokenAccountA = _ownerTokenAccountA;
+    accountAInstructions && txBuilder.addInstruction(accountAInstructions);
+
+    const { account: _ownerTokenAccountB, instructionParams: accountBInstructions } =
+      await this.scope.account.getOrCreateTokenAccount({
+        tokenProgram: poolInfo.mintB.programId,
+        mint: new PublicKey(poolInfo.mintB.address),
+        notUseTokenAccount: mintBUseSOLBalance,
+        owner: this.scope.ownerPubKey,
+        createInfo: {
+          payer: this.scope.ownerPubKey,
+          amount: 0,
+        },
+        skipCloseAccount: !mintBUseSOLBalance,
+        associatedOnly: mintBUseSOLBalance ? false : true,
+        checkCreateATAOwner: false,
+      });
+    tokenAccountB = _ownerTokenAccountB;
+    accountBInstructions && txBuilder.addInstruction(accountBInstructions);
+
+    if (!tokenAccountA || !tokenAccountB)
+      this.logAndCreateError("cannot found target token accounts", { tokenAccountA, tokenAccountB });
+
+    const poolKeys = params.poolKeys ?? (await this.getCpmmPoolKeys(poolInfo.id));
+
+    const { publicKey: nftAccount } = getATAAddress(feePayer, nftMint, TOKEN_PROGRAM_ID);
+    const { publicKey: lockPda } = getCpLockPda(programId, nftMint);
+    const { publicKey: lockLpVault } = getATAAddress(
+      authProgram,
+      new PublicKey(poolInfo.lpMint.address),
+      TOKEN_PROGRAM_ID,
+    );
+
+    txBuilder.addInstruction({
+      instructions: [
+        collectCpFeeInstruction({
+          programId: programId ?? LOCK_CPMM_PROGRAM,
+          nftOwner: this.scope.ownerPubKey,
+          auth: authProgram ?? LOCK_CPMM_AUTH,
+
+          nftMint,
+          nftAccount,
+
+          lockPda,
+          poolId: new PublicKey(poolInfo.id),
+          mintLp: new PublicKey(poolKeys.mintLp.address),
+
+          userVaultA: tokenAccountA!,
+          userVaultB: tokenAccountB!,
+          poolVaultA: new PublicKey(poolKeys.vault.A),
+          poolVaultB: new PublicKey(poolKeys.vault.B),
+
+          mintA,
+          mintB,
+          lockLpVault,
+          lpFeeAmount,
+
+          cpmmProgram: cpmmProgram?.programId,
+          cpmmAuthProgram: cpmmProgram?.authProgram,
+        }),
+      ],
+      instructionTypes: [InstructionType.CpmmCollectLockFee],
+    });
+
+    txBuilder.addCustomComputeBudget(computeBudgetConfig);
+    return txBuilder.versionBuild({ txVersion }) as Promise<MakeTxData>;
+  }
+
   public computeSwapAmount({
     pool,
     amountIn,
@@ -829,6 +982,7 @@ export default class CpmmModule extends ModuleBase {
     inputAmountFee: GetTransferAmountFee;
     anotherAmount: GetTransferAmountFee;
     maxAnotherAmount: GetTransferAmountFee;
+    minAnotherAmount: GetTransferAmountFee;
     liquidity: BN;
   } {
     const coefficient = 1 - Number(slippage.toSignificant()) / 100;
@@ -889,8 +1043,15 @@ export default class CpmmModule extends ModuleBase {
     }
 
     const _slippage = new Percent(new BN(1)).add(slippage);
+    const _slippageMin = new Percent(new BN(1)).sub(slippage);
     const slippageAdjustedAmount = getTransferAmountFeeV2(
       _slippage.mul(anotherAmountFee.amount.sub(anotherAmountFee.fee ?? new BN(0))).quotient,
+      poolInfo[baseIn ? "mintB" : "mintA"].extensions.feeConfig,
+      epochInfo,
+      true,
+    );
+    const slippageAdjustedMinAmount = getTransferAmountFeeV2(
+      _slippageMin.mul(anotherAmountFee.amount.sub(anotherAmountFee.fee ?? new BN(0))).quotient,
       poolInfo[baseIn ? "mintB" : "mintA"].extensions.feeConfig,
       epochInfo,
       true,
@@ -911,6 +1072,7 @@ export default class CpmmModule extends ModuleBase {
       inputAmountFee,
       anotherAmount: anotherAmountFee,
       maxAnotherAmount: slippageAdjustedAmount,
+      minAnotherAmount: slippageAdjustedMinAmount,
       liquidity,
     };
   }

@@ -1,11 +1,11 @@
 import { Connection, PublicKey } from "@solana/web3.js";
-import { MintLayout, RawMint, TOKEN_PROGRAM_ID, TransferFeeConfig } from "@solana/spl-token";
-import { Token, TokenAmount } from "@/module";
+import { MintLayout, RawMint, TOKEN_PROGRAM_ID, TransferFeeConfigLayout } from "@solana/spl-token";
 import { BigNumberish } from "@/common/bignumber";
-import { TokenInfo } from "./type";
+import { Token, TokenAmount } from "../../module";
 import { SOL_INFO, TOKEN_WSOL } from "./constant";
+import { TokenInfo } from "./type";
 
-import { ApiV3Token } from "@/api";
+import { ApiV3Token } from "../../api";
 import { solToWSol } from "@/common";
 
 export const parseTokenInfo = async ({
@@ -18,6 +18,8 @@ export const parseTokenInfo = async ({
   const accountData = await connection.getAccountInfo(new PublicKey(mint));
   if (!accountData || accountData.data.length !== MintLayout.span) return;
   const tokenInfo = MintLayout.decode(accountData.data);
+  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+  //@ts-ignore
   return tokenInfo;
 };
 
@@ -111,7 +113,9 @@ export const toApiV3Token = ({
   ...props,
 });
 
-export const toFeeConfig = (config?: TransferFeeConfig): ApiV3Token["extensions"]["feeConfig"] | undefined =>
+export const toFeeConfig = (
+  config?: ReturnType<typeof TransferFeeConfigLayout.decode> | undefined | null,
+): ApiV3Token["extensions"]["feeConfig"] | undefined =>
   config
     ? {
         ...config,

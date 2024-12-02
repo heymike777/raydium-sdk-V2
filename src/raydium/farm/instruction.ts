@@ -1,51 +1,52 @@
 import {
+  Connection,
   PublicKey,
   SystemProgram,
-  SYSVAR_RENT_PUBKEY,
   SYSVAR_CLOCK_PUBKEY,
+  SYSVAR_RENT_PUBKEY,
   TransactionInstruction,
-  Connection,
 } from "@solana/web3.js";
+import BN from "bn.js";
 import {
+  ASSOCIATED_TOKEN_PROGRAM_ID,
   createAssociatedTokenAccountInstruction,
   TOKEN_PROGRAM_ID,
-  ASSOCIATED_TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
-import BN from "bn.js";
 
-import { struct, u8, u64, u32, bool } from "@/marshmallow";
 import { FormatFarmKeyOut } from "@/api/type";
-import { getATAAddress } from "@/common/pda";
+import { parseBigNumberish } from "@/common";
 import { createLogger } from "@/common/logger";
-import { parseBigNumberish } from "@/common/bignumber";
+import { getATAAddress } from "@/common/pda";
 import {
   accountMeta,
   commonSystemAccountMeta,
-  SOLMint,
-  RENT_PROGRAM_ID,
   INSTRUCTION_PROGRAM_ID,
+  RENT_PROGRAM_ID,
+  SOLMint,
 } from "@/common/pubKey";
 import { InstructionType } from "@/common/txTool/txType";
+import { bool, struct, u32, u64, u8 } from "../../marshmallow";
 import { InstructionReturn } from "../type";
+import { poolTypeV6 } from "./config";
 import {
   associatedLedgerAccountLayout,
-  farmRewardLayout,
-  withdrawRewardLayout,
-  farmLedgerLayoutV3_2,
+  dwLayout,
   farmAddRewardLayout,
+  farmLedgerLayoutV3_2,
+  farmRewardLayout,
+  farmRewardRestartLayout,
+  withdrawRewardLayout,
 } from "./layout";
-import { FarmRewardInfoConfig, RewardInfoKey, RewardType } from "./type";
 import {
   getRegistrarAddress,
-  getVotingTokenMint,
-  getVotingMintAuthority,
+  getTokenOwnerRecordAddress,
   getVoterAddress,
   getVoterWeightRecordAddress,
-  getTokenOwnerRecordAddress,
+  getVotingMintAuthority,
+  getVotingTokenMint,
 } from "./pda";
-import { dwLayout, farmRewardRestartLayout } from "./layout";
+import { FarmRewardInfoConfig, RewardInfoKey, RewardType } from "./type";
 import { getAssociatedLedgerAccount, getDepositEntryIndex } from "./util";
-import { poolTypeV6 } from "./config";
 
 const logger = createLogger("Raydium_farm_instruction");
 
@@ -920,6 +921,43 @@ export function makeWithdrawInstructionV5(params: DepositWithdrawParams): Transa
   }
 
   return new TransactionInstruction({ programId, keys, data });
+}
+
+export function makeWithdrawInstructionV4(params: DepositWithdrawParams): TransactionInstruction {
+  const { farmInfo, farmKeys, lpAccount, rewardAccounts, owner, amount, userAuxiliaryLedgers } = params;
+  const [programId, id] = [new PublicKey(farmInfo.programId), new PublicKey(farmInfo.id)];
+
+  const dataLayout = struct([u8('instruction'), u64('amount')])
+
+  const keys = [
+    accountMeta({ pubkey: id }),
+    accountMeta({ pubkey: new PublicKey(farmKeys.authority), isWritable: false }),
+    accountMeta({ pubkey: userAuxiliaryLedgers![0] }),
+    accountMeta({ pubkey: owner, isSigner: true, isWritable: false }),
+    accountMeta({ pubkey: lpAccount }),
+    accountMeta({ pubkey: new PublicKey(farmKeys.lpVault) }),
+    accountMeta({ pubkey: rewardAccounts[0] }),
+    accountMeta({ pubkey: new PublicKey(farmKeys.rewardInfos[0].vault) }),
+    accountMeta({ pubkey: SYSVAR_CLOCK_PUBKEY, isWritable: false }),
+    accountMeta({ pubkey: TOKEN_PROGRAM_ID, isWritable: false }),
+    accountMeta({ pubkey: rewardAccounts[1] }),
+    accountMeta({ pubkey: new PublicKey(farmKeys.rewardInfos[1].vault) }),
+  ]
+
+  const data = Buffer.alloc(dataLayout.span)
+  dataLayout.encode(
+    {
+      instruction: 2,
+      amount
+    },
+    data
+  )
+
+  return new TransactionInstruction({
+    keys,
+    programId,
+    data
+  })
 }
 
 export function makeWithdrawInstructionV3(params: DepositWithdrawParams): TransactionInstruction {

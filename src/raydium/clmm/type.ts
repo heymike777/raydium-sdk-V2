@@ -1,15 +1,15 @@
-import { EpochInfo, Keypair, PublicKey, Signer, Transaction, TransactionInstruction } from "@solana/web3.js";
+import { EpochInfo, Keypair, PublicKey, Signer, Transaction } from "@solana/web3.js";
 import BN from "bn.js";
 import Decimal from "decimal.js";
-import { TokenAmount, Percent, Price, Fraction } from "@/module";
+import { ApiClmmConfigInfo, ApiV3PoolInfoConcentratedItem, ApiV3Token, ClmmKeys } from "../../api/type";
+import { TxVersion } from "../../common/txTool/txType";
+import { Fraction, Percent, Price, TokenAmount } from "../../module";
+import { ComputeBudgetConfig } from "../../raydium/type";
 import { TokenInfo } from "../token/type";
-import { TickArray } from "./utils/tick";
-import { ApiClmmConfigInfo, ApiV3PoolInfoConcentratedItem, ClmmKeys, ApiV3Token } from "@/api/type";
-import { TxVersion } from "@/common/txTool/txType";
 import { GetTransferAmountFee, TransferAmountFee } from "../type";
-import { ComputeBudgetConfig } from "@/raydium/type";
+import { TickArray } from "./utils/tick";
 
-import { ClmmPositionLayout, PoolInfoLayout } from "./layout";
+import { ClmmPositionLayout, PoolInfoLayout, LockClPositionLayoutV2 } from "./layout";
 
 export { ApiClmmConfigInfo };
 
@@ -149,6 +149,7 @@ export interface ComputeClmmPoolInfo {
 
   ammConfig: ClmmConfigInfo;
   observationId: PublicKey;
+  exBitmapAccount: PublicKey;
 
   creator: PublicKey;
   programId: PublicKey;
@@ -171,6 +172,7 @@ export interface ComputeClmmPoolInfo {
   startTime: number;
 
   exBitmapInfo: TickArrayBitmapExtensionType;
+  rewardInfos: ReturnType<typeof PoolInfoLayout.decode>["rewardInfos"];
 }
 
 export interface ReturnTypeMakeHarvestTransaction {
@@ -216,13 +218,6 @@ export interface ReturnTypeMakeCreatePoolTransaction {
   signers: (Signer | Keypair)[];
   transaction: Transaction;
   mockPoolInfo: ClmmPoolInfo;
-}
-export interface ReturnTypeMakeInstructions<T = Record<string, PublicKey>> {
-  signers: (Signer | Keypair)[];
-  instructions: TransactionInstruction[];
-  instructionTypes: string[];
-  address: T;
-  lookupTableAddress: string[];
 }
 
 export type ManipulateLiquidityExtInfo = {
@@ -381,6 +376,7 @@ export interface DecreaseLiquidity<T = TxVersion.LEGACY> {
   liquidity: BN;
   amountMinA: BN;
   amountMinB: BN;
+  nftAccount?: PublicKey;
 
   associatedOnly?: boolean;
   checkCreateATAOwner?: boolean;
@@ -393,14 +389,18 @@ export interface LockPosition<T = TxVersion.LEGACY> {
   authProgramId?: PublicKey;
   poolProgramId?: PublicKey;
   ownerPosition: ClmmPositionLayout;
+  payer?: PublicKey;
   computeBudgetConfig?: ComputeBudgetConfig;
   txVersion?: T;
+  getEphemeralSigners?: (k: number) => any;
 }
 
 export interface HarvestLockPosition<T = TxVersion.LEGACY> {
   programId?: PublicKey;
   authProgramId?: PublicKey;
-  ownerPosition: ClmmPositionLayout;
+  clmmProgram?: PublicKey;
+  poolKeys?: ClmmKeys;
+  lockData: ReturnType<typeof LockClPositionLayoutV2.decode>;
   ownerInfo?: {
     useSOLBalance?: boolean; // if has WSOL mint
   };
@@ -437,6 +437,7 @@ export interface OpenPositionFromBase<T = TxVersion.LEGACY> {
   baseAmount: BN;
   otherAmountMax: BN;
 
+  nft2022?: boolean;
   associatedOnly?: boolean;
   checkCreateATAOwner?: boolean;
   withMetadata?: "create" | "no-create";
@@ -472,6 +473,7 @@ export interface OpenPositionFromLiquidity<T = TxVersion.LEGACY> {
   getEphemeralSigners?: (k: number) => any;
   txVersion?: T;
   computeBudgetConfig;
+  nft2022?: boolean;
 }
 
 export interface OpenPositionFromLiquidityExtInfo {
@@ -575,7 +577,7 @@ export interface HarvestAllRewardsParams<T = TxVersion.LEGACY> {
     feePayer?: PublicKey;
     useSOLBalance?: boolean;
   };
-  lockInfo?: { [poolId: string]: { [positionNft: string]: { lockId: string | PublicKey } } };
+  lockInfo?: { [poolId: string]: { [positionNft: string]: ReturnType<typeof LockClPositionLayoutV2.decode> } };
   associatedOnly?: boolean;
   checkCreateATAOwner?: boolean;
   programId?: PublicKey;
@@ -608,3 +610,12 @@ export interface InitRewardExtInfo {
 }
 
 export type ClmmRpcData = ReturnType<typeof PoolInfoLayout.decode> & { currentPrice: number; programId: PublicKey };
+
+export interface ClmmLockAddress {
+  positionId: PublicKey;
+  lockPositionId: PublicKey;
+  lockNftAccount: PublicKey;
+  lockNftMint: PublicKey;
+  positionNftAccount: PublicKey;
+  metadataAccount: PublicKey;
+}

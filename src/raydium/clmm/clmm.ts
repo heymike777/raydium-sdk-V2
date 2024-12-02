@@ -1,5 +1,7 @@
 import { PublicKey } from "@solana/web3.js";
+import BN from "bn.js";
 import Decimal from "decimal.js";
+import { ApiV3PoolInfoConcentratedItem, ClmmKeys } from "../../api/type";
 import {
   CLMM_LOCK_AUTH_ID,
   CLMM_LOCK_PROGRAM_ID,
@@ -7,50 +9,56 @@ import {
   InstructionType,
   WSOLMint,
   fetchMultipleMintInfos,
+  getATAAddress,
   getMultipleAccountsInfoWithCustomFlags,
 } from "@/common";
-import { ApiV3PoolInfoConcentratedItem, ClmmKeys } from "@/api/type";
-import { MakeTxData, MakeMultiTxData } from "@/common/txTool/txTool";
+import { AccountLayout, TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import { MakeMultiTxData, MakeTxData } from "@/common/txTool/txTool";
 import { TxVersion } from "@/common/txTool/txType";
-import { getATAAddress } from "@/common";
-import { toApiV3Token, toFeeConfig } from "@/raydium/token/utils";
-import { ReturnTypeFetchMultipleMintInfos, ComputeBudgetConfig } from "@/raydium/type";
+import { toApiV3Token, toFeeConfig } from "../../raydium/token/utils";
+import { ComputeBudgetConfig, ReturnTypeFetchMultipleMintInfos } from "../../raydium/type";
 import ModuleBase, { ModuleBaseProps } from "../moduleBase";
-import { mockV3CreatePoolInfo, MIN_SQRT_PRICE_X64, MAX_SQRT_PRICE_X64 } from "./utils/constants";
-import { SqrtPriceMath } from "./utils/math";
+import { MakeTransaction } from "../type";
+import { ClmmInstrument } from "./instrument";
+import { ClmmConfigLayout, ClmmPositionLayout, OperationLayout, PoolInfoLayout, PositionInfoLayout } from "./layout";
 import {
-  CreateConcentratedPool,
-  IncreasePositionFromLiquidity,
-  IncreasePositionFromBase,
-  DecreaseLiquidity,
-  OpenPositionFromBase,
-  OpenPositionFromLiquidity,
-  InitRewardParams,
-  InitRewardsParams,
-  SetRewardParams,
-  SetRewardsParams,
+  ClmmRpcData,
+  ClosePositionExtInfo,
   CollectRewardParams,
   CollectRewardsParams,
-  ManipulateLiquidityExtInfo,
-  OpenPositionFromLiquidityExtInfo,
-  OpenPositionFromBaseExtInfo,
-  ClosePositionExtInfo,
-  InitRewardExtInfo,
-  HarvestAllRewardsParams,
   ComputeClmmPoolInfo,
-  ReturnTypeFetchMultiplePoolTickArrays,
-  ClmmRpcData,
-  LockPosition,
+  CreateConcentratedPool,
+  DecreaseLiquidity,
+  HarvestAllRewardsParams,
   HarvestLockPosition,
+  IncreasePositionFromBase,
+  IncreasePositionFromLiquidity,
+  InitRewardExtInfo,
+  InitRewardParams,
+  InitRewardsParams,
+  LockPosition,
+  ManipulateLiquidityExtInfo,
+  OpenPositionFromBase,
+  OpenPositionFromBaseExtInfo,
+  OpenPositionFromLiquidity,
+  OpenPositionFromLiquidityExtInfo,
+  ReturnTypeFetchMultiplePoolTickArrays,
+  SetRewardParams,
+  SetRewardsParams,
+  ClmmLockAddress,
 } from "./type";
-import { ClmmInstrument } from "./instrument";
-import { MakeTransaction } from "../type";
-import { MathUtil } from "./utils/math";
+import { MAX_SQRT_PRICE_X64, MIN_SQRT_PRICE_X64, mockV3CreatePoolInfo } from "./utils/constants";
+import { MathUtil, SqrtPriceMath } from "./utils/math";
+import {
+  getPdaOperationAccount,
+  getPdaPersonalPositionAddress,
+  getPdaLockClPositionIdV2,
+  getPdaTickArrayAddress,
+  getPdaProtocolPositionAddress,
+  getPdaExBitmapAccount,
+} from "./utils/pda";
 import { PoolUtils, clmmComputeInfoToApiInfo } from "./utils/pool";
-import { getPdaOperationAccount, getPdaPersonalPositionAddress } from "./utils/pda";
-import { ClmmPositionLayout, OperationLayout, PositionInfoLayout, PoolInfoLayout, ClmmConfigLayout } from "./layout";
-import BN from "bn.js";
-import { AccountLayout, TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import { TickUtils } from "./utils/tick";
 
 export class Clmm extends ModuleBase {
   constructor(params: ModuleBaseProps) {
@@ -110,6 +118,8 @@ export class Clmm extends ModuleBase {
       extInfo: {
         address: {
           ...insInfo.address,
+          observationId: insInfo.address.observationId.toBase58(),
+          exBitmapAccount: insInfo.address.exBitmapAccount.toBase58(),
           programId: programId.toString(),
           id: insInfo.address.poolId.toString(),
           mintA,
@@ -167,6 +177,7 @@ export class Clmm extends ModuleBase {
     base,
     baseAmount,
     otherAmountMax,
+    nft2022,
     associatedOnly = true,
     checkCreateATAOwner = false,
     withMetadata = "create",
@@ -252,6 +263,7 @@ export class Clmm extends ModuleBase {
       otherAmountMax,
       withMetadata,
       getEphemeralSigners,
+      nft2022,
     });
 
     txBuilder.addInstruction(insInfo);
@@ -277,6 +289,7 @@ export class Clmm extends ModuleBase {
     txVersion,
     computeBudgetConfig,
     getEphemeralSigners,
+    nft2022,
   }: OpenPositionFromLiquidity<T>): Promise<MakeTxData<T, OpenPositionFromLiquidityExtInfo>> {
     if (this.scope.availability.createConcentratedPosition === false)
       this.logAndCreateError("open position feature disabled in your region");
@@ -350,6 +363,7 @@ export class Clmm extends ModuleBase {
       amountMaxB,
       withMetadata,
       getEphemeralSigners,
+      nft2022,
     });
     txBuilder.addInstruction(makeOpenPositionInstructions);
     txBuilder.addCustomComputeBudget(computeBudgetConfig);
@@ -439,6 +453,7 @@ export class Clmm extends ModuleBase {
       liquidity,
       amountMaxA,
       amountMaxB,
+      nft2022: (await this.scope.connection.getAccountInfo(ownerPosition.nftMint))?.owner.equals(TOKEN_2022_PROGRAM_ID),
     });
     txBuilder.addInstruction(ins);
     txBuilder.addCustomComputeBudget(computeBudgetConfig);
@@ -527,6 +542,7 @@ export class Clmm extends ModuleBase {
       base,
       baseAmount,
       otherAmountMax,
+      nft2022: (await this.scope.connection.getAccountInfo(ownerPosition.nftMint))?.owner.equals(TOKEN_2022_PROGRAM_ID),
     });
     txBuilder.addInstruction(ins);
     txBuilder.addCustomComputeBudget(computeBudgetConfig);
@@ -552,6 +568,7 @@ export class Clmm extends ModuleBase {
       checkCreateATAOwner = false,
       computeBudgetConfig,
       txVersion,
+      nftAccount,
     } = props;
     if (this.scope.availability.removeConcentratedPosition === false)
       this.logAndCreateError("remove position feature disabled in your region");
@@ -634,7 +651,9 @@ export class Clmm extends ModuleBase {
       );
 
     const poolKeys = propPoolKeys ?? (await this.getClmmPoolKeys(poolInfo.id));
-
+    const nft2022 = (await this.scope.connection.getAccountInfo(ownerPosition.nftMint))?.owner.equals(
+      TOKEN_2022_PROGRAM_ID,
+    );
     const decreaseInsInfo = await ClmmInstrument.decreaseLiquidityInstructions({
       poolInfo,
       poolKeys,
@@ -648,6 +667,7 @@ export class Clmm extends ModuleBase {
       liquidity,
       amountMinA,
       amountMinB,
+      nft2022,
     });
 
     txBuilder.addInstruction({
@@ -662,6 +682,7 @@ export class Clmm extends ModuleBase {
         poolKeys,
         ownerInfo: { wallet: this.scope.ownerPubKey },
         ownerPosition,
+        nft2022,
       });
       txBuilder.addInstruction({
         endInstructions: closeInsInfo.instructions,
@@ -677,42 +698,46 @@ export class Clmm extends ModuleBase {
     }) as Promise<MakeTxData<T, ManipulateLiquidityExtInfo>>;
   }
 
-  public async lockPosition<T extends TxVersion>(props: LockPosition<T>): Promise<MakeTxData<T>> {
+  public async lockPosition<T extends TxVersion>(props: LockPosition<T>): Promise<MakeTxData<ClmmLockAddress>> {
     const {
       programId = CLMM_LOCK_PROGRAM_ID,
       authProgramId = CLMM_LOCK_AUTH_ID,
       poolProgramId = CLMM_PROGRAM_ID,
       ownerPosition,
+      payer,
       computeBudgetConfig,
       txVersion,
+      getEphemeralSigners,
     } = props;
     const txBuilder = this.createTxBuilder();
-
-    const lockIns = await ClmmInstrument.lockPositionInstruction({
+    const lockIns = await ClmmInstrument.makeLockPositions({
       programId,
       authProgramId,
       poolProgramId,
-      owner: this.scope.ownerPubKey,
-      positionNft: ownerPosition.nftMint,
+      wallet: this.scope.ownerPubKey,
+      payer: payer ?? this.scope.ownerPubKey,
+      nftMint: ownerPosition.nftMint,
+      getEphemeralSigners,
+      nft2022: (await this.scope.connection.getAccountInfo(ownerPosition.nftMint))?.owner.equals(TOKEN_2022_PROGRAM_ID),
     });
 
-    txBuilder.addInstruction({
-      instructions: [lockIns],
-      instructionTypes: [InstructionType.ClmmLockPosition],
-    });
+    txBuilder.addInstruction(lockIns);
 
     txBuilder.addCustomComputeBudget(computeBudgetConfig);
 
     return txBuilder.versionBuild({
       txVersion,
-    }) as Promise<MakeTxData<T>>;
+      extInfo: lockIns.address,
+    }) as Promise<MakeTxData<ClmmLockAddress>>;
   }
 
   public async harvestLockPosition<T extends TxVersion>(props: HarvestLockPosition<T>): Promise<MakeTxData<T>> {
     const {
       programId = CLMM_LOCK_PROGRAM_ID,
       authProgramId = CLMM_LOCK_AUTH_ID,
-      ownerPosition,
+      clmmProgram = CLMM_PROGRAM_ID,
+      poolKeys: propPoolKeys,
+      lockData,
       ownerInfo = { useSOLBalance: true },
       associatedOnly = true,
       checkCreateATAOwner = false,
@@ -720,8 +745,12 @@ export class Clmm extends ModuleBase {
       txVersion,
     } = props;
 
-    const poolKeys = await this.getClmmPoolKeys(ownerPosition.poolId.toString());
+    const poolKeys = propPoolKeys || (await this.getClmmPoolKeys(lockData.poolId.toString()));
     const txBuilder = this.createTxBuilder();
+
+    const positionData = await this.scope.connection.getAccountInfo(lockData.positionId);
+    if (!positionData) this.logger.logWithError("position not found", lockData.positionId);
+    const position = PositionInfoLayout.decode(positionData!.data);
 
     const mintAUseSOLBalance = ownerInfo.useSOLBalance && poolKeys.mintA.address === WSOLMint.toString();
     const mintBUseSOLBalance = ownerInfo.useSOLBalance && poolKeys.mintB.address === WSOLMint.toString();
@@ -787,16 +816,69 @@ export class Clmm extends ModuleBase {
       ownerMintToAccount[itemReward.mint.address] = ownerRewardAccount;
       rewardAccounts.push(ownerRewardAccount!);
     }
+    const lockPositionId = getPdaLockClPositionIdV2(programId, lockData.lockNftMint).publicKey;
+    const lockNftAccount = getATAAddress(this.scope.ownerPubKey, lockData.lockNftMint, TOKEN_PROGRAM_ID).publicKey;
 
-    const harvestLockIns = await ClmmInstrument.harvestLockPositionInstruction({
+    const tickArrayLowerStartIndex = TickUtils.getTickArrayStartIndexByTick(
+      position.tickLower,
+      poolKeys.config.tickSpacing,
+    );
+    const tickArrayUpperStartIndex = TickUtils.getTickArrayStartIndexByTick(
+      position.tickUpper,
+      poolKeys.config.tickSpacing,
+    );
+    const { publicKey: tickArrayLower } = getPdaTickArrayAddress(
+      new PublicKey(poolKeys.programId),
+      lockData.poolId,
+      tickArrayLowerStartIndex,
+    );
+    const { publicKey: tickArrayUpper } = getPdaTickArrayAddress(
+      new PublicKey(poolKeys.programId),
+      lockData.poolId,
+      tickArrayUpperStartIndex,
+    );
+    const { publicKey: protocolPosition } = getPdaProtocolPositionAddress(
+      new PublicKey(poolKeys.programId),
+      lockData.poolId,
+      position.tickLower,
+      position.tickUpper,
+    );
+
+    const rewardAccountsFullInfo: {
+      poolRewardVault: PublicKey;
+      ownerRewardVault: PublicKey;
+      rewardMint: PublicKey;
+    }[] = [];
+    for (let i = 0; i < poolKeys.rewardInfos.length; i++) {
+      rewardAccountsFullInfo.push({
+        poolRewardVault: new PublicKey(poolKeys.rewardInfos[i].vault),
+        ownerRewardVault: rewardAccounts[i],
+        rewardMint: new PublicKey(poolKeys.rewardInfos[i].mint.address),
+      });
+    }
+
+    const harvestLockIns = await ClmmInstrument.harvestLockPositionInstructionV2({
       programId,
-      authProgramId,
-      poolKeys,
-      ownerPosition,
-      owner: this.scope.ownerPubKey,
-      ownerRewardAccounts: rewardAccounts,
+      auth: authProgramId,
+      lockPositionId,
+      clmmProgram,
+      lockOwner: this.scope.ownerPubKey,
+      lockNftMint: lockData.lockNftMint,
+      lockNftAccount,
+      positionNftAccount: lockData.nftAccount,
+      positionId: lockData.positionId,
+      poolId: lockData.poolId,
+      protocolPosition,
+      vaultA: new PublicKey(poolKeys.vault.A),
+      vaultB: new PublicKey(poolKeys.vault.B),
+      tickArrayLower,
+      tickArrayUpper,
       userVaultA: ownerTokenAccountA!,
       userVaultB: ownerTokenAccountB!,
+      mintA: new PublicKey(poolKeys.mintA.address),
+      mintB: new PublicKey(poolKeys.mintB.address),
+      rewardAccounts: rewardAccountsFullInfo,
+      exTickArrayBitmap: getPdaExBitmapAccount(clmmProgram, lockData.poolId).publicKey,
     });
 
     txBuilder.addInstruction({
@@ -831,6 +913,7 @@ export class Clmm extends ModuleBase {
       poolKeys,
       ownerInfo: { wallet: this.scope.ownerPubKey },
       ownerPosition,
+      nft2022: (await this.scope.connection.getAccountInfo(ownerPosition.nftMint))?.owner.equals(TOKEN_2022_PROGRAM_ID),
     });
 
     return txBuilder.addInstruction(ins).versionBuild<ClosePositionExtInfo>({
@@ -1494,6 +1577,19 @@ export class Clmm extends ModuleBase {
         ownerMintToAccount[item.accountInfo.mint.toString()] = item.pubkey;
       }
     }
+    const allNftMints = Object.values(allPositions)
+      .flat()
+      .map((p) => p.nftMint);
+
+    const mintData = await getMultipleAccountsInfoWithCustomFlags(
+      this.scope.connection,
+      allNftMints.map((n) => ({ pubkey: n })),
+    );
+    const record: Record<string, PublicKey | null> = {};
+    mintData.forEach((data) => {
+      record[data.pubkey.toBase58()] = data?.accountInfo?.owner ?? null;
+    });
+
     const txBuilder = this.createTxBuilder();
     for (const itemInfo of Object.values(allPoolInfo)) {
       if (allPositions[itemInfo.id] === undefined) continue;
@@ -1550,6 +1646,7 @@ export class Clmm extends ModuleBase {
       ownerMintToAccount[poolInfo.mintB.address] = ownerTokenAccountB;
 
       const rewardAccounts: PublicKey[] = [];
+
       for (const itemReward of poolInfo.rewardDefaultInfos) {
         const rewardUseSOLBalance = ownerInfo.useSOLBalance && itemReward.mint.address === WSOLMint.toString();
         let ownerRewardAccount = ownerMintToAccount[itemReward.mint.address];
@@ -1576,17 +1673,75 @@ export class Clmm extends ModuleBase {
 
       const poolKeys = await this.getClmmPoolKeys(poolInfo.id);
 
+      const rewardAccountsFullInfo: {
+        poolRewardVault: PublicKey;
+        ownerRewardVault: PublicKey;
+        rewardMint: PublicKey;
+      }[] = [];
+      for (let i = 0; i < poolKeys.rewardInfos.length; i++) {
+        rewardAccountsFullInfo.push({
+          poolRewardVault: new PublicKey(poolKeys.rewardInfos[i].vault),
+          ownerRewardVault: rewardAccounts[i],
+          rewardMint: new PublicKey(poolKeys.rewardInfos[i].mint.address),
+        });
+      }
+
       for (const itemPosition of allPositions[itemInfo.id]) {
-        if (lockInfo && lockInfo[itemInfo.id] && lockInfo[itemInfo.id][itemPosition.nftMint.toBase58()]) {
-          const harvestLockIns = ClmmInstrument.harvestLockPositionInstruction({
-            poolKeys,
-            owner: this.scope.ownerPubKey!,
-            ownerPosition: itemPosition,
-            ownerRewardAccounts: rewardAccounts,
+        const lockData = lockInfo?.[itemInfo.id]?.[itemPosition.nftMint.toBase58()];
+        if (lockData) {
+          const lockNftAccount = getATAAddress(
+            this.scope.ownerPubKey,
+            lockData.lockNftMint,
+            TOKEN_PROGRAM_ID,
+          ).publicKey;
+
+          const tickArrayLowerStartIndex = TickUtils.getTickArrayStartIndexByTick(
+            itemPosition.tickLower,
+            poolKeys.config.tickSpacing,
+          );
+          const tickArrayUpperStartIndex = TickUtils.getTickArrayStartIndexByTick(
+            itemPosition.tickUpper,
+            poolKeys.config.tickSpacing,
+          );
+          const { publicKey: tickArrayLower } = getPdaTickArrayAddress(
+            new PublicKey(poolKeys.programId),
+            lockData.poolId,
+            tickArrayLowerStartIndex,
+          );
+          const { publicKey: tickArrayUpper } = getPdaTickArrayAddress(
+            new PublicKey(poolKeys.programId),
+            lockData.poolId,
+            tickArrayUpperStartIndex,
+          );
+          const { publicKey: protocolPosition } = getPdaProtocolPositionAddress(
+            new PublicKey(poolKeys.programId),
+            lockData.poolId,
+            itemPosition.tickLower,
+            itemPosition.tickUpper,
+          );
+          const lockPositionId = getPdaLockClPositionIdV2(CLMM_LOCK_PROGRAM_ID, lockData.lockNftMint).publicKey;
+          const harvestLockIns = ClmmInstrument.harvestLockPositionInstructionV2({
             programId: CLMM_LOCK_PROGRAM_ID,
-            authProgramId: CLMM_LOCK_AUTH_ID,
-            userVaultA: ownerTokenAccountA,
-            userVaultB: ownerTokenAccountB,
+            auth: CLMM_LOCK_AUTH_ID,
+            lockPositionId,
+            clmmProgram: CLMM_PROGRAM_ID,
+            lockOwner: this.scope.ownerPubKey,
+            lockNftMint: lockData.lockNftMint,
+            lockNftAccount,
+            positionNftAccount: lockData.nftAccount,
+            positionId: lockData.positionId,
+            poolId: lockData.poolId,
+            protocolPosition,
+            vaultA: new PublicKey(poolKeys.vault.A),
+            vaultB: new PublicKey(poolKeys.vault.B),
+            tickArrayLower,
+            tickArrayUpper,
+            userVaultA: ownerTokenAccountA!,
+            userVaultB: ownerTokenAccountB!,
+            mintA: new PublicKey(poolKeys.mintA.address),
+            mintB: new PublicKey(poolKeys.mintB.address),
+            rewardAccounts: rewardAccountsFullInfo,
+            exTickArrayBitmap: getPdaExBitmapAccount(CLMM_PROGRAM_ID, lockData.poolId).publicKey,
           });
           txBuilder.addInstruction({
             instructions: [harvestLockIns],
@@ -1607,6 +1762,7 @@ export class Clmm extends ModuleBase {
             liquidity: new BN(0),
             amountMinA: new BN(0),
             amountMinB: new BN(0),
+            nft2022: record[itemPosition.nftMint.toBase58()]?.equals(TOKEN_2022_PROGRAM_ID),
           });
           txBuilder.addInstruction(insData);
         }
@@ -1791,6 +1947,8 @@ export class Clmm extends ModuleBase {
 
     const poolKeys: ClmmKeys = {
       ...computeClmmPoolInfo[poolId],
+      exBitmapAccount: computeClmmPoolInfo[poolId].exBitmapAccount.toBase58(),
+      observationId: computeClmmPoolInfo[poolId].observationId.toBase58(),
       id: poolId,
       programId: rpcData.programId.toBase58(),
       openTime: rpcData.startTime.toString(),
@@ -1798,8 +1956,13 @@ export class Clmm extends ModuleBase {
         A: rpcData.vaultA.toBase58(),
         B: rpcData.vaultB.toBase58(),
       },
-      rewardInfos: [],
       config: poolInfo.config,
+      rewardInfos: computeClmmPoolInfo[poolId].rewardInfos
+        .filter((r) => !r.tokenVault.equals(PublicKey.default))
+        .map((r) => ({
+          mint: toApiV3Token({ address: r.tokenMint.toBase58(), programId: TOKEN_PROGRAM_ID.toBase58(), decimals: 10 }),
+          vault: r.tokenVault.toBase58(),
+        })),
     };
     return { poolInfo, poolKeys, computePoolInfo: computeClmmPoolInfo[poolId], tickData: computePoolTickData };
   }

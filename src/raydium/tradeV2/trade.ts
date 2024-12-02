@@ -1,55 +1,52 @@
-import { PublicKey, EpochInfo } from "@solana/web3.js";
-import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, createTransferInstruction } from "@solana/spl-token";
+import { EpochInfo, PublicKey } from "@solana/web3.js";
+import { createTransferInstruction, TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
+import BN from "bn.js";
+import Decimal from "decimal.js";
+import { AmmV4Keys, ApiV3Token, ClmmKeys, PoolKeys } from "@/api";
 import {
-  WSOLMint,
   AMM_V4,
+  BigNumberish,
   CLMM_PROGRAM_ID,
   CREATE_CPMM_POOL_PROGRAM,
-  minExpirationTime,
-  getMultipleAccountsInfoWithCustomFlags,
-  solToWSol,
   fetchMultipleMintInfos,
+  getMultipleAccountsInfoWithCustomFlags,
+  minExpirationTime,
+  parseBigNumberish,
+  solToWSol,
+  WSOLMint,
 } from "@/common";
+import { MakeMultiTxData, MakeTxData } from "@/common/txTool/txTool";
 import { InstructionType, TxVersion } from "@/common/txTool/txType";
-import { MakeTxData, MakeMultiTxData } from "@/common/txTool/txTool";
-import ModuleBase, { ModuleBaseProps } from "../moduleBase";
-import { BigNumberish, parseBigNumberish } from "@/common/bignumber";
+import { publicKey, struct } from "../../marshmallow";
+import { Price, TokenAmount } from "../../module";
+import { ClmmRpcData, ComputeClmmPoolInfo, PoolUtils, ReturnTypeFetchMultiplePoolTickArrays } from "../../raydium/clmm";
+import { PoolInfoLayout } from "../../raydium/clmm/layout";
+import { CpmmPoolInfoLayout, getPdaPoolAuthority } from "../../raydium/cpmm";
 import {
-  createWSolAccountInstructions,
-  closeAccountInstruction,
-  makeTransferInstruction,
-} from "../account/instruction";
-import { TokenAccount } from "../account/types";
-import { ComputeBudgetConfig, ReturnTypeFetchMultipleMintInfos } from "@/raydium/type";
-import {
-  getLiquidityAssociatedAuthority,
   ComputeAmountOutParam,
+  getLiquidityAssociatedAuthority,
   liquidityStateV4Layout,
   toAmmComputePoolInfo,
-} from "@/raydium/liquidity";
-import { PoolInfoLayout } from "@/raydium/clmm/layout";
-import { CpmmPoolInfoLayout, getPdaPoolAuthority } from "@/raydium/cpmm";
-import { ReturnTypeFetchMultiplePoolTickArrays, PoolUtils, ClmmRpcData, ComputeClmmPoolInfo } from "@/raydium/clmm";
-import { struct, publicKey } from "@/marshmallow";
+} from "../../raydium/liquidity";
+import { ComputeBudgetConfig, ReturnTypeFetchMultipleMintInfos } from "../../raydium/type";
+import { closeAccountInstruction, createWSolAccountInstructions } from "../account/instruction";
+import { TokenAccount } from "../account/types";
+import { CpmmComputeData } from "../cpmm";
+import { AmmRpcData } from "../liquidity";
+import ModuleBase, { ModuleBaseProps } from "../moduleBase";
+import { Market, MARKET_STATE_LAYOUT_V3 } from "../serum";
+import { toApiV3Token, toToken, toTokenAmount } from "../token";
+import { makeSwapInstruction } from "./instrument";
 import {
-  ReturnTypeGetAllRoute,
   BasicPoolInfo,
-  RoutePathType,
-  ReturnTypeFetchMultipleInfo,
-  ComputeAmountOutLayout,
   ComputeAmountOutAmmLayout,
+  ComputeAmountOutLayout,
   ComputePoolType,
   ComputeRoutePathType,
+  ReturnTypeFetchMultipleInfo,
+  ReturnTypeGetAllRoute,
+  RoutePathType,
 } from "./type";
-import { TokenAmount, Price } from "@/module";
-import BN from "bn.js";
-import { AmmV4Keys, ApiV3Token, ClmmKeys, PoolKeys } from "@/api";
-import { toApiV3Token, toToken, toTokenAmount } from "../token";
-import Decimal from "decimal.js";
-import { makeSwapInstruction } from "./instrument";
-import { AmmRpcData } from "../liquidity";
-import { MARKET_STATE_LAYOUT_V3, Market } from "../serum";
-import { CpmmComputeData } from "../cpmm";
 
 const ZERO = new BN(0);
 export default class TradeV2 extends ModuleBase {
@@ -212,7 +209,7 @@ export default class TradeV2 extends ModuleBase {
     }
 
     let destinationAcc: PublicKey;
-    if (swapInfo.routeType === "route") {
+    if (swapInfo.routeType === "route" && !isOutputSol) {
       destinationAcc = this.scope.account.getAssociatedTokenAccount(
         outputMint,
         amountOut.amount.token.isToken2022 ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID,
@@ -1181,6 +1178,8 @@ export default class TradeV2 extends ModuleBase {
             defaultRangePoint: [],
           },
           rewardInfos: [],
+          observationId: pool.observationId.toBase58(),
+          exBitmapAccount: pool.exBitmapAccount.toBase58(),
         };
         poolKeys.push(clmmKeys);
       } else if (pool.version === 4) {
@@ -1204,6 +1203,7 @@ export default class TradeV2 extends ModuleBase {
         poolKeys.push(ammKeys);
       } else if (pool.version === 7) {
         poolKeys.push({
+          observationId: pool.observationId.toBase58(),
           programId: pool.programId.toBase58(),
           id: pool.id.toBase58(),
           mintA: pool.mintA,

@@ -1,30 +1,25 @@
-import { PublicKey, Connection, EpochInfo } from "@solana/web3.js";
+import { Connection, EpochInfo, PublicKey } from "@solana/web3.js";
+import { TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
 import BN from "bn.js";
 
 import {
   ClmmPoolInfo,
   ClmmPoolRewardInfo,
   ClmmPoolRewardLayoutInfo,
-  ReturnTypeGetLiquidityAmountOut,
-  TickArrayBitmapExtensionType,
+  ComputeClmmPoolInfo,
+  ReturnTypeComputeAmountOut,
+  ReturnTypeComputeAmountOutBaseOut,
+  ReturnTypeComputeAmountOutFormat,
   ReturnTypeFetchExBitmaps,
   ReturnTypeFetchMultiplePoolTickArrays,
+  ReturnTypeGetLiquidityAmountOut,
   SDKParsedConcentratedInfo,
-  ReturnTypeComputeAmountOut,
-  ReturnTypeComputeAmountOutFormat,
-  ReturnTypeComputeAmountOutBaseOut,
-  ComputeClmmPoolInfo,
+  TickArrayBitmapExtensionType,
 } from "../type";
 
 import { ApiV3PoolInfoConcentratedItem, ApiV3Token } from "@/api/type";
 
-import { NEGATIVE_ONE, Q64, ZERO, MAX_TICK, MIN_TICK, MIN_SQRT_PRICE_X64, MAX_SQRT_PRICE_X64 } from "./constants";
-import { MathUtil, SwapMath, SqrtPriceMath, LiquidityMath } from "./math";
-import { getPdaTickArrayAddress, getPdaPersonalPositionAddress, getPdaExBitmapAccount } from "./pda";
-import { TickArray, TickUtils, TICK_ARRAY_BITMAP_SIZE, Tick } from "./tick";
-import { TickArrayBitmap, TickArrayBitmapExtensionUtils } from "./tickarrayBitmap";
-import { TickQuery } from "./tickQuery";
-import { TickArrayBitmapExtensionLayout, PositionInfoLayout, TickArrayLayout, PoolInfoLayout } from "../layout";
+import Decimal from "decimal.js";
 import {
   getMultipleAccountsInfo,
   getMultipleAccountsInfoWithCustomFlags,
@@ -32,11 +27,16 @@ import {
   minExpirationTime,
   solToWSol,
 } from "@/common";
-import { TokenAccountRaw } from "../../account/types";
-import { Price, Percent, TokenAmount, Token } from "../../../module";
+import { Percent, Price, Token, TokenAmount } from "@/module";
+import { TokenAccountRaw } from "@/raydium/account/types";
+import { PoolInfoLayout, PositionInfoLayout, TickArrayBitmapExtensionLayout, TickArrayLayout } from "../layout";
+import { MAX_SQRT_PRICE_X64, MAX_TICK, MIN_SQRT_PRICE_X64, MIN_TICK, NEGATIVE_ONE, Q64, ZERO } from "./constants";
+import { LiquidityMath, MathUtil, SqrtPriceMath, SwapMath } from "./math";
+import { getPdaExBitmapAccount, getPdaPersonalPositionAddress, getPdaTickArrayAddress } from "./pda";
 import { PositionUtils } from "./position";
-import Decimal from "decimal.js";
-import { TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
+import { TICK_ARRAY_BITMAP_SIZE, Tick, TickArray, TickUtils } from "./tick";
+import { TickArrayBitmap, TickArrayBitmapExtensionUtils } from "./tickarrayBitmap";
+import { TickQuery } from "./tickQuery";
 
 export class PoolUtils {
   public static getOutputAmountAndRemainAccounts(
@@ -1237,9 +1237,11 @@ export class PoolUtils {
             fundOwner: "",
           },
           currentPrice: new Decimal(cur.price),
+          exBitmapAccount: getPdaExBitmapAccount(new PublicKey(cur.programId), new PublicKey(cur.id)).publicKey,
           exBitmapInfo:
             exBitData[getPdaExBitmapAccount(new PublicKey(cur.programId), new PublicKey(cur.id)).publicKey.toBase58()],
           startTime: rpcDataMap[cur.id].startTime.toNumber(),
+          rewardInfos: rpcDataMap[cur.id].rewardInfos,
         },
       }),
       {} as Record<string, ComputeClmmPoolInfo>,

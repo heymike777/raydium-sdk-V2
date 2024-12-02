@@ -1,26 +1,27 @@
+import { Commitment, PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
+import { BigNumberish, getATAAddress, InstructionType, WSOLMint } from "@/common";
 import {
+  AccountLayout,
   createAssociatedTokenAccountInstruction,
   TOKEN_PROGRAM_ID,
-  AccountLayout,
   TOKEN_2022_PROGRAM_ID,
 } from "@solana/spl-token";
-import { Commitment, PublicKey, SystemProgram, TransactionInstruction } from "@solana/web3.js";
-import { getATAAddress, BigNumberish, InstructionType, WSOLMint } from "@/common";
 import { AddInstructionParam } from "@/common/txTool/txTool";
 
 import ModuleBase, { ModuleBaseProps } from "../moduleBase";
 import {
   closeAccountInstruction,
   createWSolAccountInstructions,
-  makeTransferInstruction,
   initTokenAccountInstruction,
+  makeTransferInstruction,
 } from "./instruction";
-import { HandleTokenAccountParams, TokenAccount, TokenAccountRaw, GetOrCreateTokenAccountParams } from "./types";
-import { parseTokenAccountResp, generatePubKey } from "./util";
+import { GetOrCreateTokenAccountParams, HandleTokenAccountParams, TokenAccount, TokenAccountRaw } from "./types";
+import { generatePubKey, parseTokenAccountResp } from "./util";
 
 export interface TokenAccountDataProp {
   tokenAccounts?: TokenAccount[];
   tokenAccountRawInfos?: TokenAccountRaw[];
+  notSubscribeAccountChange?: boolean;
 }
 export default class Account extends ModuleBase {
   private _tokenAccounts: TokenAccount[] = [];
@@ -28,13 +29,15 @@ export default class Account extends ModuleBase {
   private _accountChangeListenerId?: number;
   private _accountListener: ((data: TokenAccountDataProp) => void)[] = [];
   private _clientOwnedToken = false;
+  private _notSubscribeAccountChange = false;
   private _accountFetchTime = 0;
 
   constructor(params: TokenAccountDataProp & ModuleBaseProps) {
     super(params);
-    const { tokenAccounts, tokenAccountRawInfos } = params;
+    const { tokenAccounts, tokenAccountRawInfos, notSubscribeAccountChange } = params;
     this._tokenAccounts = tokenAccounts || [];
     this._tokenAccountRawInfos = tokenAccountRawInfos || [];
+    this._notSubscribeAccountChange = notSubscribeAccountChange ?? false;
     this._clientOwnedToken = !!(tokenAccounts || tokenAccountRawInfos);
   }
 
@@ -43,6 +46,10 @@ export default class Account extends ModuleBase {
   }
   get tokenAccountRawInfos(): TokenAccountRaw[] {
     return this._tokenAccountRawInfos;
+  }
+
+  set notSubscribeAccountChange(subscribe: boolean) {
+    this._notSubscribeAccountChange = subscribe;
   }
 
   public updateTokenAccount({ tokenAccounts, tokenAccountRawInfos }: TokenAccountDataProp): Account {
@@ -120,12 +127,19 @@ export default class Account extends ModuleBase {
 
     this._accountFetchTime = Date.now();
 
-    this._accountChangeListenerId && this.scope.connection.removeAccountChangeListener(this._accountChangeListenerId);
-    this._accountChangeListenerId = this.scope.connection.onAccountChange(
-      this.scope.ownerPubKey,
-      () => this.fetchWalletTokenAccounts({ forceUpdate: true }),
-      config?.commitment,
-    );
+    if (!this._notSubscribeAccountChange) {
+      this._accountChangeListenerId && this.scope.connection.removeAccountChangeListener(this._accountChangeListenerId);
+      this._accountChangeListenerId = this.scope.connection.onAccountChange(
+        this.scope.ownerPubKey,
+        () => {
+          this.fetchWalletTokenAccounts({ forceUpdate: true });
+          this._accountListener.forEach((cb) =>
+            cb({ tokenAccounts: this._tokenAccounts, tokenAccountRawInfos: this._tokenAccountRawInfos }),
+          );
+        },
+        { commitment: config?.commitment },
+      );
+    }
 
     return { tokenAccounts, tokenAccountRawInfos };
   }
@@ -169,6 +183,7 @@ export default class Account extends ModuleBase {
       notUseTokenAccount = false,
       skipCloseAccount = false,
       checkCreateATAOwner = false,
+      assignSeed,
     } = params;
     const tokenProgram = new PublicKey(params.tokenProgram || TOKEN_PROGRAM_ID);
     const ata = this.getAssociatedTokenAccount(mint, new PublicKey(tokenProgram));
@@ -265,7 +280,7 @@ export default class Account extends ModuleBase {
 
       //   return { account: txInstruction.addresses.newAccount, instructionParams: newTxInstructions };
       // } else {
-      const newTokenAccount = generatePubKey({ fromPublicKey: owner, programId: tokenProgram });
+      const newTokenAccount = generatePubKey({ fromPublicKey: owner, programId: tokenProgram, assignSeed });
       const balanceNeeded = await this.scope.connection.getMinimumBalanceForRentExemption(AccountLayout.span);
 
       const createAccountIns = SystemProgram.createAccountWithSeed({

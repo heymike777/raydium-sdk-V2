@@ -1,12 +1,12 @@
 import { PublicKey } from "@solana/web3.js";
-import { ApiV3PoolInfoStandardItem, AmmV4Keys, AmmV5Keys } from "@/api/type";
-import { TxVersion } from "@/common/txTool/txType";
-import { BigNumberish } from "@/common/bignumber";
 import BN from "bn.js";
-import { ComputeBudgetConfig } from "@/raydium/type";
-import { TokenAmount } from "@/module/amount";
-import { liquidityStateV4Layout } from "./layout";
 import Decimal from "decimal.js";
+import { AmmV4Keys, AmmV5Keys, ApiV3PoolInfoStandardItem } from "../../api/type";
+import { BigNumberish } from "../../common/bignumber";
+import { TxVersion } from "../../common/txTool/txType";
+import { TokenAmount } from "../../module/amount";
+import { ComputeBudgetConfig } from "../../raydium/type";
+import { liquidityStateV4Layout } from "./layout";
 
 export type LiquiditySide = "a" | "b";
 export type AmountSide = "base" | "quote";
@@ -17,6 +17,7 @@ export interface AddLiquidityParams<T = TxVersion.LEGACY> {
   payer?: PublicKey;
   amountInA: TokenAmount;
   amountInB: TokenAmount;
+  otherAmountMin: TokenAmount;
   fixedSide: LiquiditySide;
   config?: {
     bypassAssociatedCheck?: boolean;
@@ -30,7 +31,9 @@ export interface RemoveParams<T = TxVersion.LEGACY> {
   poolInfo: ApiV3PoolInfoStandardItem;
   poolKeys?: AmmV4Keys | AmmV5Keys;
   payer?: PublicKey;
-  amountIn: BN;
+  lpAmount: BN;
+  baseAmountMin: BN;
+  quoteAmountMin: BN;
   config?: {
     bypassAssociatedCheck?: boolean;
     checkCreateATAOwner?: boolean;
@@ -52,6 +55,7 @@ export interface LiquidityAddInstructionParams {
   userKeys: LiquidityUserKeys;
   baseAmountIn: BigNumberish;
   quoteAmountIn: BigNumberish;
+  otherAmountMin: BigNumberish;
   fixedSide: AmountSide;
 }
 
@@ -59,7 +63,9 @@ export interface RemoveLiquidityInstruction {
   poolInfo: ApiV3PoolInfoStandardItem;
   poolKeys: AmmV4Keys | AmmV5Keys;
   userKeys: LiquidityUserKeys;
-  amountIn: BigNumberish;
+  lpAmount: BigNumberish;
+  baseAmountMin: BigNumberish;
+  quoteAmountMin: BigNumberish;
 }
 
 export interface LiquidityPoolKeys {
@@ -120,6 +126,42 @@ export interface CreatePoolParam<T> {
   checkCreateATAOwner?: boolean;
   tokenProgram?: PublicKey;
   feeDestinationId: PublicKey;
+  computeBudgetConfig?: ComputeBudgetConfig;
+  txVersion?: T;
+}
+
+export interface CreateMarketAndPoolParam<T> {
+  programId?: PublicKey;
+  marketProgram?: PublicKey;
+  feeDestinationId?: PublicKey;
+
+  baseMintInfo: {
+    mint: PublicKey;
+    decimals: number;
+  };
+  quoteMintInfo: {
+    mint: PublicKey;
+    decimals: number;
+  };
+
+  baseAmount: BN;
+  quoteAmount: BN;
+  startTime: BN;
+  lowestFeeMarket?: boolean;
+  assignSeed?: string;
+
+  lotSize?: number;
+  tickSize?: number;
+
+  ownerInfo: {
+    feePayer?: PublicKey;
+    useSOLBalance?: boolean; // if has WSOL mint
+  };
+  associatedOnly: boolean;
+  checkCreateATAOwner?: boolean;
+
+  tokenProgram?: PublicKey;
+
   computeBudgetConfig?: ComputeBudgetConfig;
   txVersion?: T;
 }
