@@ -1,5 +1,5 @@
 {
-  "name": "@raydium-io/raydium-sdk-v2",
+  "name": "@heymike/raydium-sdk-v2",
   "version": "0.1.92-alpha",
   "description": "An SDK for building applications on top of Raydium.",
   "license": "GPL-3.0",
@@ -10,7 +10,7 @@
     "./lib",
     "./src"
   ],
-  "repository": "https://github.com/raydium-io/raydium-sdk-V2",
+  "repository": "https://github.com/heymike777/raydium-sdk-V2",
   "publicConfig": {
     "registry": "https://registry.yarnpkg.com",
     "access": "public"
