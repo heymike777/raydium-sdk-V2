@@ -10,7 +10,7 @@
     "./lib",
     "./src"
   ],
-  "repository": "https://github.com/heymike777/raydium-sdk-V2",
+  "repository": "https://github.com/raydium-io/raydium-sdk-V2",
   "publicConfig": {
     "registry": "https://registry.yarnpkg.com",
     "access": "public"

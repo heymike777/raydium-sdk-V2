@@ -11,7 +11,7 @@ import { getMultipleAccountsInfoWithCustomFlags } from "@/common/accountInfo";
 import { BN_ZERO, divCeil } from "@/common/bignumber";
 import { getATAAddress } from "@/common/pda";
 import { BNDivCeil } from "@/common/transfer";
-import { MakeMultiTxData, MakeTxData, TxBuilder } from "@/common/txTool/txTool";
+import { MakeMultiTxData, MakeTxData } from "@/common/txTool/txTool";
 import { InstructionType, TxVersion } from "@/common/txTool/txType";
 import { Percent, Token, TokenAmount } from "../../module";
 import {
@@ -1375,101 +1375,6 @@ export default class LiquidityModule extends ModuleBase {
     return txBuilder.versionBuild({
       txVersion,
     }) as Promise<MakeTxData<T>>;
-  }
-
-  public async swapTxBuilder<T extends TxVersion>({
-    poolInfo,
-    poolKeys: propPoolKeys,
-    amountIn,
-    amountOut,
-    inputMint,
-    fixedSide,
-    txVersion,
-    config,
-    computeBudgetConfig,
-  }: SwapParam<T>): Promise<TxBuilder> {
-    const txBuilder = this.createTxBuilder();
-    const { associatedOnly = true, inputUseSolBalance = true, outputUseSolBalance = true } = config || {};
-
-    const [tokenIn, tokenOut] =
-      inputMint === poolInfo.mintA.address ? [poolInfo.mintA, poolInfo.mintB] : [poolInfo.mintB, poolInfo.mintA];
-
-    const inputTokenUseSolBalance = inputUseSolBalance && tokenIn.address === WSOLMint.toBase58();
-    const outputTokenUseSolBalance = outputUseSolBalance && tokenOut.address === WSOLMint.toBase58();
-
-    const { account: _tokenAccountIn, instructionParams: ownerTokenAccountBaseInstruction } =
-      await this.scope.account.getOrCreateTokenAccount({
-        tokenProgram: TOKEN_PROGRAM_ID,
-        mint: new PublicKey(tokenIn.address),
-        owner: this.scope.ownerPubKey,
-
-        createInfo: inputTokenUseSolBalance
-          ? {
-              payer: this.scope.ownerPubKey,
-              amount: amountIn,
-            }
-          : undefined,
-        skipCloseAccount: !inputTokenUseSolBalance,
-        notUseTokenAccount: inputTokenUseSolBalance,
-        associatedOnly,
-      });
-    txBuilder.addInstruction(ownerTokenAccountBaseInstruction || {});
-
-    if (!_tokenAccountIn)
-      this.logAndCreateError("input token account not found", {
-        token: tokenIn.symbol || tokenIn.address,
-        tokenAccountIn: _tokenAccountIn,
-        inputTokenUseSolBalance,
-        associatedOnly,
-      });
-
-    const { account: _tokenAccountOut, instructionParams: ownerTokenAccountQuoteInstruction } =
-      await this.scope.account.getOrCreateTokenAccount({
-        tokenProgram: TOKEN_PROGRAM_ID,
-        mint: new PublicKey(tokenOut.address),
-        owner: this.scope.ownerPubKey,
-        createInfo: {
-          payer: this.scope.ownerPubKey!,
-          amount: 0,
-        },
-        skipCloseAccount: !outputTokenUseSolBalance,
-        notUseTokenAccount: outputTokenUseSolBalance,
-        associatedOnly: outputTokenUseSolBalance ? false : associatedOnly,
-      });
-    txBuilder.addInstruction(ownerTokenAccountQuoteInstruction || {});
-    if (_tokenAccountOut === undefined)
-      this.logAndCreateError("output token account not found", {
-        token: tokenOut.symbol || tokenOut.address,
-        tokenAccountOut: _tokenAccountOut,
-        outputTokenUseSolBalance,
-        associatedOnly,
-      });
-
-    const poolKeys = propPoolKeys || (await this.getAmmPoolKeys(poolInfo.id));
-    let version = 4;
-    if (poolInfo.pooltype.includes("StablePool")) version = 5;
-
-    txBuilder.addInstruction({
-      instructions: [
-        makeAMMSwapInstruction({
-          version,
-          poolKeys,
-          userKeys: {
-            tokenAccountIn: _tokenAccountIn!,
-            tokenAccountOut: _tokenAccountOut!,
-            owner: this.scope.ownerPubKey,
-          },
-          amountIn,
-          amountOut,
-          fixedSide,
-        }),
-      ],
-      instructionTypes: [version === 4 ? InstructionType.AmmV4SwapBaseIn : InstructionType.AmmV5SwapBaseIn],
-    });
-
-    txBuilder.addCustomComputeBudget(computeBudgetConfig);
-
-    return txBuilder;
   }
 
   public async getRpcPoolInfo(poolId: string): Promise<AmmRpcData> {
