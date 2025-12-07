@@ -267,7 +267,7 @@ export default class CpmmModule extends ModuleBase {
         type: "Standard",
         lpMint,
         lpPrice: 0,
-        lpAmount: rpcData.lpAmount.toNumber(),
+        lpAmount: new Decimal(rpcData.lpAmount.toString()).div(10 ** lpMint.decimals).toNumber(),
         config: configInfo,
         mintA,
         mintB,
